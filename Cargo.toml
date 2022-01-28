@@ -1,8 +1,21 @@
 [package]
 name = "ra-multiplex"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+autobins = false
+
+[[bin]]
+name = "ra-multiplex"
+path = "src/client.rs"
+
+[[bin]]
+name = "ra-multiplex-server"
+path = "src/server.rs"
 
 [dependencies]
-serde = "1.0.136"
+anyhow = "1.0.53"
+log = "0.4.14"
+pretty_env_logger = "0.4.0"
+serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.78"
+tokio = { version = "1.15.0", features = ["rt-multi-thread", "macros", "net", "io-util", "process"] }
