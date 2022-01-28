@@ -37,7 +37,9 @@
 //!   client but the specification also says it has nothing to do with the request IDs
 
 use anyhow::{ensure, Context, Result};
+use ra_multiplex::proto;
 use serde_json::{Map, Value};
+use server::lsp;
 use std::net::Ipv4Addr;
 use std::process::Stdio;
 use std::str;
@@ -47,10 +49,13 @@ use tokio::io::{
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::task;
-use ra_multiplex::{ProtoInit, PORT};
+
+mod server {
+    pub mod lsp;
+}
 
 async fn process_client(socket: TcpStream, port: u16) -> Result<()> {
-    log::debug!("accepted {port}");
+    log::info!("accepted {port}");
 
     let (socket_read, socket_write) = socket.into_split();
     let mut socket_read = BufReader::new(socket_read);
@@ -62,8 +67,7 @@ async fn process_client(socket: TcpStream, port: u16) -> Result<()> {
         .context("read proto init")?;
     header.pop();
 
-    let proto_init: ProtoInit =
-        serde_json::from_slice(&header).context("invalid proto init")?;
+    let proto_init: proto::Init = serde_json::from_slice(&header).context("invalid proto init")?;
     ensure!(proto_init.check_version(), "invalid protocol version");
 
     let child = Command::new("rust-analyzer")
@@ -88,59 +92,29 @@ async fn copy_io<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     mut write: W,
     port: u16,
 ) -> Result<()> {
-    let mut header = Vec::new();
-    let mut packet = Vec::new();
+    let mut buffer = Vec::new();
 
     loop {
-        let mut content_type = None;
-        let mut content_len = None;
+        let header = lsp::Header::from_reader(&mut buffer, &mut read)
+            .await
+            .context("parsing header")?;
 
-        loop {
-            // read headers
-            header.clear();
-            read.read_until(b'\n', &mut header)
-                .await
-                .context("read header")?;
-            let header_text = header
-                .strip_suffix(b"\r\n")
-                .expect("malformed header, missing \\r\\n");
+        buffer.clear();
+        buffer.resize(header.content_length, 0);
+        read.read_exact(&mut buffer).await.context("read body")?;
 
-            if header_text.is_empty() {
-                // header is separated by nothing
-                break;
-            }
-            if let Some(value) = header_text.strip_prefix(b"Content-Type: ") {
-                content_type = Some(value.to_owned());
-                continue;
-            }
-            if let Some(value) = header_text.strip_prefix(b"Content-Length: ") {
-                content_len = Some(
-                    str::from_utf8(value)
-                        .expect("invalid utf8")
-                        .parse::<usize>()
-                        .expect("invalid content length"),
-                );
-                continue;
-            }
-            panic!("invalid header: {}", String::from_utf8_lossy(header_text));
-        }
-
-        let _ = content_type; // ignore content-type if present
-        let content_len = content_len.expect("missing content-length");
-
-        packet.resize(content_len, 0);
-        read.read_exact(&mut packet).await.context("read body")?;
-
-        let json: Map<String, Value> = serde_json::from_slice(&packet).expect("invalid packet");
+        let json: Map<String, Value> = serde_json::from_slice(&buffer).context("invalid body")?;
         if let Some(id) = json.get("id") {
-            log::info!("{tag} port={port}, message_id={id:?}");
+            log::debug!("{tag} port={port}, message_id={id:?}");
+        } else {
+            log::debug!("{tag} port={port}, no_id");
         }
 
         write
-            .write_all(format!("Content-Length: {}\r\n\r\n", content_len).as_bytes())
+            .write_all(format!("Content-Length: {}\r\n\r\n", header.content_length).as_bytes())
             .await
             .context("write header")?;
-        write.write_all(&packet).await.context("write packet")?;
+        write.write_all(&buffer).await.context("write body")?;
         write.flush().await.context("flush socket")?;
     }
 }
@@ -149,7 +123,7 @@ async fn copy_io<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    let listener = TcpListener::bind((Ipv4Addr::new(0, 0, 0, 0), PORT))
+    let listener = TcpListener::bind((Ipv4Addr::new(0, 0, 0, 0), proto::PORT))
         .await
         .context("listen")?;
 

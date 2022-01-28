@@ -1,27 +1,40 @@
-#![feature(stdio_locked)]
-
 use anyhow::{Context, Result};
-use std::io::{self, Write};
-use std::net::{Ipv4Addr, TcpStream};
-use std::thread;
-use ra_multiplex::{ProtoInit, PORT};
+use ra_multiplex::proto;
+use std::net::Ipv4Addr;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::{io, task};
 
-fn main() -> Result<()> {
-    let mut stream =
-        TcpStream::connect((Ipv4Addr::new(127, 0, 0, 1), PORT)).context("connect")?;
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let stream = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 1), proto::PORT))
+        .await
+        .context("connect")?;
+    let (mut read_stream, mut write_stream) = stream.into_split();
 
-    serde_json::to_writer(&mut stream, &ProtoInit::new())
-        .context("sending protocol initialization")?;
-    stream
-        .write_all(b"\0")
-        .context("sending protocol initialization")?;
+    let proto_init = proto::Init::new();
+    let mut proto_init = serde_json::to_vec(&proto_init).context("sending proto init")?;
+    proto_init.push(b'\0');
+    write_stream
+        .write_all(&proto_init)
+        .await
+        .context("sending proto init")?;
+    drop(proto_init);
 
-    let stream2 = stream.try_clone().context("duplicate tcp stream")?;
-    let t1 = thread::spawn(move || {
-        let mut stream = stream2;
-        io::copy(&mut io::stdin_locked(), &mut stream).expect("io error");
+    let t1 = task::spawn(async move {
+        io::copy(&mut read_stream, &mut io::stdout())
+            .await
+            .context("io error")
     });
-    io::copy(&mut stream, &mut io::stdout_locked()).expect("io error");
-    t1.join().unwrap();
+    let t2 = task::spawn(async move {
+        io::copy(&mut io::stdin(), &mut write_stream)
+            .await
+            .context("io error")
+    });
+    tokio::select! {
+        res = t1 => res,
+        res = t2 => res,
+    }
+    .context("join")??;
     Ok(())
 }
