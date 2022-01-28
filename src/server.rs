@@ -5,55 +5,74 @@
 //!
 //! LSP Multiplexer attempts to solve this problem by spawning a single rust-analyzer instance per
 //! cargo workspace and routing the messages through TCP to multiple clients.
-//!
-//! ## Language server protocol
-//!
-//! Specification can be found at
-//! <https://microsoft.github.io/language-server-protocol/specifications/specification-current/>.
-//!
-//! We're not interested in supporting or even parsing the whole protocol, we only want a subset
-//! that will allow us to mupltiplex messages between multiple clients and a single server.
-//!
-//! LSP has several main message types:
-//!
-//! ### Request Message
-//! Requests from client to server. Requests contain an `id` property which is either `integer` or
-//! `string`.
-//!
-//! ### Response Message
-//! Responses from server for client requests. Also contain an `id` property, but according to the
-//! the specification it can also be null, it's unclear what we should do when it is null. We could
-//! either send the response to all clients or drop it.
-//!
-//! ### Notification Message
-//! Notifications must not receive a response, this doesn't really mean anything to us as we're
-//! just relaying the messages. It sounds like it'd allow us to simply pass a notification from any
-//! client to the server and to pass a server notification to all clients, however there are some
-//! subtypes of notifications defined by the LSP where that could be confusing to the client or
-//! server:
-//! - Cancel notifications - contains an `id` property again, so we could multiplex this like any
-//!   other request
-//! - Progress notifications - contains a `token` property which could be used to identify the
-//!   client but the specification also says it has nothing to do with the request IDs
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use ra_multiplex::proto;
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 use server::lsp;
+use server::message::Message;
 use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::str;
+use std::str::{self, FromStr};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tokio::net::{TcpListener, TcpStream};
-use tokio::process::Command;
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc;
 use tokio::task;
 
 mod server {
     pub mod lsp;
+    pub mod message;
 }
 
+struct RaInstance {
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    stderr: ChildStderr,
+
+    args: Vec<String>,
+    project_root: PathBuf,
+}
+
+impl RaInstance {
+    fn spawn(client_cwd: String, client_args: Vec<String>) -> Result<RaInstance> {
+        // find the cargo project root:
+        // we assume that the top-most directory from the client_cwd containing a file named `Cargo.toml` is
+        // the project root
+        let client_cwd = Path::new(&client_cwd);
+        let mut project_root = None;
+        for ancestor in client_cwd.ancestors() {
+            let cargo_toml = ancestor.join("Cargo.toml");
+            if cargo_toml.exists() {
+                project_root = Some(ancestor.to_owned());
+            }
+        }
+        let project_root = project_root
+            .with_context(|| format!("couldn't find project root for {}", client_cwd.display()))?;
+
+        let child = Command::new("rust-analyzer")
+            .args(&client_args)
+            .current_dir(&project_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("couldn't spawn rust-analyzer")?;
+
+        Ok(RaInstance {
+            stdin: child.stdin.unwrap(),
+            stdout: BufReader::new(child.stdout.unwrap()),
+            stderr: child.stderr.unwrap(),
+            args: client_args,
+            project_root,
+        })
+    }
+}
+
+/// finds or spawns a rust-analyzer instance and connects the client
 async fn process_client(socket: TcpStream, port: u16) -> Result<()> {
     log::info!("accepted {port}");
 
@@ -70,60 +89,196 @@ async fn process_client(socket: TcpStream, port: u16) -> Result<()> {
     let proto_init: proto::Init = serde_json::from_slice(&header).context("invalid proto init")?;
     ensure!(proto_init.check_version(), "invalid protocol version");
 
-    let child = Command::new("rust-analyzer")
-        .args(&proto_init.args)
-        .current_dir(&proto_init.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("cannot spawn rust-analyzer")?;
+    // TODO for now we're spawning a new instance unconditionally
+    let instance =
+        RaInstance::spawn(proto_init.cwd, proto_init.args).context("spawn ra instance")?;
 
-    let child_stdin = child.stdin.unwrap();
-    let child_stdout = BufReader::new(child.stdout.unwrap());
+    let (tx, rx) = mpsc::channel(64);
+    task::spawn(async move {
+        if let Err(err) = read_client_socket(socket_read, tx, port).await {
+            log::error!("read_client_socket {err:?}");
+        }
+    });
+    task::spawn(async move {
+        if let Err(err) = write_socket(rx, instance.stdin).await {
+            log::error!("write_socket(server) {err:?}");
+        }
+    });
 
-    task::spawn(async move { copy_io("recv", socket_read, child_stdin, port).await });
-    task::spawn(async move { copy_io("send", child_stdout, socket_write, port).await });
+    let (tx, rx) = mpsc::channel(64);
+    task::spawn(async move {
+        if let Err(err) = read_server_socket(instance.stdout, tx).await {
+            log::error!("read_server_socket {err:?}");
+        }
+    });
+    task::spawn(async move {
+        if let Err(err) = write_socket(rx, socket_write).await {
+            log::error!("write_socket(client) {err:?}");
+        }
+    });
     Ok(())
 }
 
-async fn copy_io<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
-    tag: &'static str,
-    mut read: R,
-    mut write: W,
+/// reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
+/// to the writer
+async fn read_client_socket<R>(
+    mut reader: R,
+    sender: mpsc::Sender<Message>,
     port: u16,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
     let mut buffer = Vec::new();
 
     loop {
-        let header = lsp::Header::from_reader(&mut buffer, &mut read)
+        let header = lsp::Header::from_reader(&mut buffer, &mut reader)
             .await
             .context("parsing header")?;
 
         buffer.clear();
         buffer.resize(header.content_length, 0);
-        read.read_exact(&mut buffer).await.context("read body")?;
+        reader.read_exact(&mut buffer).await.context("read body")?;
 
-        let json: Map<String, Value> = serde_json::from_slice(&buffer).context("invalid body")?;
+        let mut json: Map<String, Value> =
+            serde_json::from_slice(&buffer).context("invalid body")?;
         if let Some(id) = json.get("id") {
-            log::debug!("{tag} port={port}, message_id={id:?}");
-        } else {
-            log::debug!("{tag} port={port}, no_id");
-        }
+            log::debug!("recv request port={port}, message_id={id:?}");
 
-        write
-            .write_all(format!("Content-Length: {}\r\n\r\n", header.content_length).as_bytes())
+            // messages containing an id need the id modified so we can discern the client to send
+            // the response to
+            let tagged_id = tag_id(port, id)?;
+            json.insert("id".to_owned(), Value::String(tagged_id));
+
+            buffer.clear();
+            serde_json::to_writer(&mut buffer, &json).context("serialize body")?;
+
+            sender
+                .send(Message::new(&buffer).with_port(port))
+                .await
+                .context("forward client request")?;
+        } else {
+            log::debug!("recv notif port={port}");
+
+            // notification messages without an id don't need any modification and can be forwarded
+            // to rust-analyzer as is
+            sender
+                .send(Message::new(&buffer).with_port(port))
+                .await
+                .context("forward client notification")?;
+        }
+    }
+}
+
+fn tag_id(port: u16, id: &Value) -> Result<String> {
+    match id {
+        Value::Number(number) => Ok(format!("{port:04x}:n:{number}")),
+        Value::String(string) => Ok(format!("{port:04x}:s:{string}")),
+        _ => bail!("unexpected message id type {id:?}"),
+    }
+}
+
+fn parse_tagged_id(tagged: &str) -> Result<(u16, Value)> {
+    let (port, rest) = tagged.split_once(':').context("missing first `:`")?;
+    let port = u16::from_str_radix(port, 16)?;
+    let (value_type, old_id) = rest.split_once(':').context("missing second `:`")?;
+    let old_id = match value_type {
+        "n" => Value::Number(Number::from_str(old_id)?),
+        "s" => Value::String(old_id.to_owned()),
+        _ => bail!("invalid tag type `{value_type}`"),
+    };
+    Ok((port, old_id))
+}
+
+async fn read_server_socket<R>(mut reader: R, sender: mpsc::Sender<Message>) -> Result<()>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut buffer = Vec::new();
+
+    loop {
+        let header = lsp::Header::from_reader(&mut buffer, &mut reader)
+            .await
+            .context("parsing header")?;
+
+        buffer.clear();
+        buffer.resize(header.content_length, 0);
+        reader.read_exact(&mut buffer).await.context("read body")?;
+
+        let mut json: Map<String, Value> =
+            serde_json::from_slice(&buffer).context("invalid body")?;
+        if let Some(id) = json.get("id") {
+            // we tagged the request id so we expect to only receive tagged responses
+            let tagged_id = match id {
+                Value::String(string) => string,
+                _ => {
+                    log::warn!("unexpected response message id type {id:?}");
+                    log::debug!("response to no request {}", Value::Object(json));
+                    // BUG uncomment this and it crashes both socket readers, why??
+                    // sender
+                    //     .send(Message::new(&buffer))
+                    //     .await
+                    //     .context("forward server request")?;
+                    continue;
+                }
+            };
+
+            let (port, old_id) = match parse_tagged_id(&tagged_id) {
+                Ok(ok) => ok,
+                Err(err) => {
+                    log::warn!("invalid tagged id {err:?}");
+                    continue;
+                }
+            };
+
+            log::debug!("send response port={port}, message_id={old_id:?}");
+
+            json.insert("id".to_owned(), old_id);
+
+            buffer.clear();
+            serde_json::to_writer(&mut buffer, &json).context("serialize body")?;
+
+            sender
+                .send(Message::new(&buffer).with_port(port))
+                .await
+                .context("forward server response")?;
+        } else {
+            log::debug!("send notif port=? {}", Value::Object(json));
+
+            // notification messages without an id don't need any modification and can be forwarded
+            // to rust-analyzer as is
+            sender
+                .send(Message::new(&buffer))
+                .await
+                .context("forward server notification")?;
+        }
+    }
+}
+
+/// reads messages from a `mpsc::Receiver` and writes them into a socket
+async fn write_socket<W>(mut receiver: mpsc::Receiver<Message>, mut writer: W) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    while let Some(message) = receiver.recv().await {
+        writer
+            .write_all(format!("Content-Length: {}\r\n\r\n", message.len()).as_bytes())
             .await
             .context("write header")?;
-        write.write_all(&buffer).await.context("write body")?;
-        write.flush().await.context("flush socket")?;
+        writer
+            .write_all(message.as_bytes())
+            .await
+            .context("write body")?;
+        writer.flush().await.context("flush socket")?;
     }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    let listener = TcpListener::bind((Ipv4Addr::new(0, 0, 0, 0), proto::PORT))
+    let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), proto::PORT))
         .await
         .context("listen")?;
 
@@ -132,13 +287,15 @@ async fn main() -> Result<()> {
             Ok((socket, addr)) => {
                 task::spawn(async move {
                     if let Err(err) = process_client(socket, addr.port()).await {
-                        log::error!("{err}");
+                        log::error!("{err:?}");
                     }
                 });
             }
             Err(err) => match err.kind() {
                 // ignore benign errors
-                std::io::ErrorKind::NotConnected => {}
+                std::io::ErrorKind::NotConnected => {
+                    log::warn!("{err}");
+                }
                 _ => {
                     Err(err).context("accept connection")?;
                 }
