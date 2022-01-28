@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
         .context("connect")?;
     let (mut read_stream, mut write_stream) = stream.into_split();
 
-    let proto_init = proto::Init::new();
+    let proto_init = proto::Init::from_env();
     let mut proto_init = serde_json::to_vec(&proto_init).context("sending proto init")?;
     proto_init.push(b'\0');
     write_stream

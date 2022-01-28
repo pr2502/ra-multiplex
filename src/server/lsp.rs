@@ -50,16 +50,17 @@ impl Header {
     pub async fn from_reader<R: AsyncBufRead + Unpin>(
         buffer: &mut Vec<u8>,
         mut reader: R,
-    ) -> Result<Self> {
+    ) -> Result<Option<Self>> {
         let mut content_type = None;
         let mut content_length = None;
 
         loop {
             buffer.clear();
-            reader
+            let bytes_read = reader
                 .read_until(b'\n', &mut *buffer)
                 .await
                 .context("reading header")?;
+            if bytes_read == 0 { return Ok(None); }
             let header_text = buffer
                 .strip_suffix(b"\r\n")
                 .context("malformed header, missing \\r\\n")?;
@@ -91,9 +92,9 @@ impl Header {
         }
 
         let content_length = content_length.context("missing content-length header")?;
-        Ok(Header {
+        Ok(Some(Header {
             content_length,
             content_type,
-        })
+        }))
     }
 }

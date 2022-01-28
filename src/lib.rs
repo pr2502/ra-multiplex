@@ -13,7 +13,7 @@ pub mod proto {
     }
 
     impl Init {
-        pub fn new() -> Init {
+        pub fn from_env() -> Init {
             Init {
                 proto: env!("CARGO_PKG_NAME").to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
