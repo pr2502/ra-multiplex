@@ -57,7 +57,7 @@ impl Client {
         if !matches!(json.get("method"), Some(Value::String(method)) if method == "initialize") {
             bail!("first client message was not InitializeRequest");
         }
-        log::info!("[{port}] recv InitializeRequest");
+        log::debug!("[{port}] recv InitializeRequest");
         // this is an initialize request, it's special because it cannot
         if self.instance.init_cache.attempt_send_request() {
             // it haven't been sent yet, we can send it.
@@ -83,7 +83,7 @@ impl Client {
     async fn wait_for_initialize_response(&self, tx: mpsc::Sender<Message>) {
         let port = self.port;
         let message = self.instance.init_cache.response.get().await;
-        log::info!("[{port}] send response to InitializeRequest");
+        log::debug!("[{port}] send response to InitializeRequest");
         tx.send(message).await.unwrap();
     }
 
@@ -171,7 +171,7 @@ where
         if matches!(json.get("method"), Some(Value::String(method)) if method == "initialized") {
             // initialized notification can only be sent by one client
             if init_cache.attempt_send_notif() {
-                log::info!("[{port}] send InitializedNotification");
+                log::debug!("[{port}] send InitializedNotification");
             } else {
                 // we're not the first, skip processing the message further
                 log::debug!("[{port}] skip InitializedNotification");

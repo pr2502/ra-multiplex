@@ -11,10 +11,11 @@ use std::process::Stdio;
 use std::str::{self, FromStr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::task;
+use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::{select, task, time};
 
 pub struct InitializeCache {
     request_sent: AtomicBool,
@@ -49,24 +50,81 @@ impl InitializeCache {
 type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
 pub struct RaInstance {
+    kill: Notify,
     project_root: PathBuf,
     pub init_cache: InitializeCache,
     pub message_readers: MessageReaders,
     pub message_writer: mpsc::Sender<Message>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct InstanceRegistry {
-    map: Arc<Mutex<HashMap<PathBuf, Arc<RaInstance>>>>,
+    inner: Arc<InnerRegistry>,
+}
+
+#[derive(Default)]
+struct InnerRegistry {
+    reap_instances: Notify,
+    map: Mutex<HashMap<PathBuf, Arc<RaInstance>>>,
 }
 
 impl InstanceRegistry {
+    pub fn new() -> Self {
+        let registry = InstanceRegistry {
+            inner: Arc::new(InnerRegistry::default()),
+        };
+        registry.spawn_reaper_task();
+        registry
+    }
+
+    fn spawn_reaper_task(&self) {
+        let registry = self.clone();
+        task::spawn(async move {
+            loop {
+                // check periodically if there are no clients since the notification only triggers
+                // if rust-analyzer tries to send a message to a disconnected client
+                select! {
+                    _ = registry.inner.reap_instances.notified() => {}
+                    _ = time::sleep(Duration::from_secs(10)) => {}
+                };
+                for (path, instance) in registry.inner.map.lock().await.iter() {
+                    if instance.message_readers.read().await.is_empty() {
+                        registry.spawn_timeout_task(path);
+                        let path = path.display();
+                        log::warn!("[{path}] no clients, kill timeout started");
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_timeout_task(&self, path: &Path) {
+        let registry = self.clone();
+        let path = path.to_owned();
+        task::spawn(async move {
+            // wait before trying to kill rust-analyzer in case another client connects
+            time::sleep(Duration::from_secs(5 * 60)).await;
+
+            if let Some(instance) = registry.inner.map.lock().await.get(&path) {
+                if instance.message_readers.read().await.is_empty() {
+                    instance.kill.notify_one();
+                } else {
+                    // a client connected before the timeout finished
+                }
+            } else {
+                let path = path.display();
+                log::warn!("[{path}] instance was already removed");
+            }
+        });
+    }
+
     pub async fn get(&self, project_root: &Path) -> Result<Arc<RaInstance>> {
-        let mut map = self.map.lock().await;
+        let mut map = self.inner.map.lock().await;
         match map.entry(project_root.to_owned()) {
             Entry::Occupied(e) => Ok(Arc::clone(e.get())),
             Entry::Vacant(e) => {
-                let new = RaInstance::spawn(&project_root).context("spawn ra instance")?;
+                let new =
+                    RaInstance::spawn(project_root, self.clone()).context("spawn ra instance")?;
                 e.insert(Arc::clone(&new));
                 Ok(new)
             }
@@ -75,7 +133,7 @@ impl InstanceRegistry {
 }
 
 impl RaInstance {
-    fn spawn(project_root: &Path) -> Result<Arc<RaInstance>> {
+    fn spawn(project_root: &Path, registry: InstanceRegistry) -> Result<Arc<RaInstance>> {
         let mut child = Command::new("rust-analyzer")
             .current_dir(project_root)
             .stdin(Stdio::piped())
@@ -90,16 +148,20 @@ impl RaInstance {
         let (message_writer, rx) = mpsc::channel(64);
 
         let instance = Arc::new(RaInstance {
+            kill: Notify::new(),
             project_root: project_root.to_owned(),
             init_cache: InitializeCache::default(),
             message_readers: MessageReaders::default(),
             message_writer,
         });
 
-        instance.spawn_wait_task(child);
+        instance.spawn_wait_task(child, registry.clone());
         instance.spawn_stderr_task(stderr);
-        instance.spawn_stdout_task(stdout);
+        instance.spawn_stdout_task(stdout, registry);
         instance.spawn_stdin_task(rx, stdin);
+
+        let path = project_root.display();
+        log::info!("[{path}] spawned rust-analyzer");
 
         Ok(instance)
     }
@@ -133,13 +195,19 @@ impl RaInstance {
     }
 
     /// read messages from server stdout and distribute them to client channels
-    fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout) {
+    fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout, registry: InstanceRegistry) {
         let stdout = BufReader::new(stdout);
         let instance = Arc::clone(self);
         let path = instance.project_root.display().to_string();
 
         task::spawn(async move {
-            match read_server_socket(stdout, &instance.message_readers, &instance.init_cache).await
+            match read_server_socket(
+                stdout,
+                &instance.message_readers,
+                &instance.init_cache,
+                &registry,
+            )
+            .await
             {
                 Err(err) => log::error!("[{path}] error reading from stdout: {err:?}"),
                 Ok(_) => log::info!("[{path}] instance stdout closed"),
@@ -158,6 +226,7 @@ impl RaInstance {
                 if let Err(err) = message.to_writer(&mut stdin).await {
                     let err = anyhow::Error::from(err);
                     log::error!("[{path}] error writing to stdin: {err:?}");
+                    break;
                 }
             }
             log::info!("[{path}] instance stdin closed");
@@ -165,27 +234,42 @@ impl RaInstance {
     }
 
     /// waits for child and logs when it exits
-    fn spawn_wait_task(self: &Arc<Self>, child: Child) {
-        let path = self.project_root.display().to_string();
+    fn spawn_wait_task(self: &Arc<Self>, child: Child, registry: InstanceRegistry) {
+        let project_root = self.project_root.clone();
+        let path = project_root.display().to_string();
+        let instance = Arc::clone(self);
         task::spawn(async move {
             let mut child = child;
-            match child.wait().await {
-                Ok(status) => {
-                    let success = if status.success() {
-                        "successfully"
-                    } else {
-                        "with error"
-                    };
-                    let mut details = String::new();
-                    if let Some(code) = status.code() {
-                        details.write_fmt(format_args!(" code {code}")).unwrap();
+            loop {
+                select! {
+                    _ = instance.kill.notified() => {
+                        if let Err(err) = child.start_kill() {
+                            log::error!("[{path}] failed to kill rust-analyzer: {err}");
+                        }
                     }
-                    if let Some(signal) = status.signal() {
-                        details.write_fmt(format_args!(" signal {signal}")).unwrap();
+                    exit = child.wait() => {
+                        registry.inner.map.lock().await.remove(&project_root);
+                        match exit {
+                            Ok(status) => {
+                                let success = if status.success() {
+                                    "successfully"
+                                } else {
+                                    "with error"
+                                };
+                                let mut details = String::new();
+                                if let Some(code) = status.code() {
+                                    details.write_fmt(format_args!(" code {code}")).unwrap();
+                                }
+                                if let Some(signal) = status.signal() {
+                                    details.write_fmt(format_args!(" signal {signal}")).unwrap();
+                                }
+                                log::error!("[{path}] child exited {success}{details}");
+                            }
+                            Err(err) => log::error!("[{path}] error waiting for child: {err}"),
+                        }
+                        break;
                     }
-                    log::error!("[{path}] child exited {success}{details}");
                 }
-                Err(err) => log::error!("[{path}] error waiting for child: {err}"),
             }
         });
     }
@@ -207,6 +291,7 @@ async fn read_server_socket<R>(
     mut reader: R,
     senders: &MessageReaders,
     init_cache: &InitializeCache,
+    registry: &InstanceRegistry,
 ) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -297,6 +382,7 @@ where
             for port in disconnected_clients.drain(..) {
                 senders.remove(&port);
             }
+            registry.inner.reap_instances.notify_waiters();
         }
     }
     Ok(())

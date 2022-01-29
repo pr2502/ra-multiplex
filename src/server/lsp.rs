@@ -109,10 +109,10 @@ impl Header {
 
 /// reads one LSP message from a reader, deserializes it and leaves the serialized body of the
 /// message in `buffer`
-pub async fn read_message<'buf, R>(
+pub async fn read_message<R>(
     mut reader: R,
-    buffer: &'buf mut Vec<u8>,
-) -> Result<Option<(Map<String, Value>, &'buf [u8])>>
+    buffer: &mut Vec<u8>,
+) -> Result<Option<(Map<String, Value>, &[u8])>>
 where
     R: AsyncBufRead + Unpin,
 {
@@ -130,7 +130,7 @@ where
 
     let bytes = buffer.as_slice();
 
-    let json: Map<String, Value> = serde_json::from_slice(&bytes).context("invalid body")?;
+    let json: Map<String, Value> = serde_json::from_slice(bytes).context("invalid body")?;
 
     Ok(Some((json, bytes)))
 }

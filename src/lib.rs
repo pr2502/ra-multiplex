@@ -38,7 +38,7 @@ pub mod proto {
                 .context("read proto init")?;
             buffer.pop(); // remove trailing '\0'
 
-            let proto_init: Self = serde_json::from_slice(&buffer).context("invalid proto init")?;
+            let proto_init: Self = serde_json::from_slice(buffer).context("invalid proto init")?;
             ensure!(proto_init.check_version(), "invalid protocol version");
             ensure!(
                 proto_init.args.is_empty(),
