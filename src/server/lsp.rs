@@ -29,8 +29,14 @@
 //!   client but the specification also says it has nothing to do with the request IDs
 
 use anyhow::{bail, ensure, Context, Result};
+use serde::Serialize;
+use serde_json::{Map, Value};
+use std::fmt::{self, Debug};
+use std::io;
 use std::str;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use std::sync::Arc;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Every message begins with a HTTP-style header
 ///
@@ -60,7 +66,9 @@ impl Header {
                 .read_until(b'\n', &mut *buffer)
                 .await
                 .context("reading header")?;
-            if bytes_read == 0 { return Ok(None); }
+            if bytes_read == 0 {
+                return Ok(None);
+            }
             let header_text = buffer
                 .strip_suffix(b"\r\n")
                 .context("malformed header, missing \\r\\n")?;
@@ -96,5 +104,73 @@ impl Header {
             content_length,
             content_type,
         }))
+    }
+}
+
+/// reads one LSP message from a reader, deserializes it and leaves the serialized body of the
+/// message in `buffer`
+pub async fn read_message<'buf, R>(
+    mut reader: R,
+    buffer: &'buf mut Vec<u8>,
+) -> Result<Option<(Map<String, Value>, &'buf [u8])>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let header = Header::from_reader(&mut *buffer, &mut reader)
+        .await
+        .context("parsing header")?;
+    let header = match header {
+        Some(header) => header,
+        None => return Ok(None),
+    };
+
+    buffer.clear();
+    buffer.resize(header.content_length, 0);
+    reader.read_exact(&mut *buffer).await.context("read body")?;
+
+    let bytes = buffer.as_slice();
+
+    let json: Map<String, Value> = serde_json::from_slice(&bytes).context("invalid body")?;
+
+    Ok(Some((json, bytes)))
+}
+
+/// LSP messages
+#[derive(Clone)]
+pub struct Message {
+    bytes: Arc<[u8]>,
+}
+
+impl Debug for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Message")
+    }
+}
+
+impl Message {
+    /// construct a message from a byte buffer, should only contain the message body - no headers
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            bytes: Arc::from(bytes),
+        }
+    }
+
+    /// construct a message from a serializable value, like JSON
+    pub fn from_json(json: &impl Serialize, buffer: &mut Vec<u8>) -> Self {
+        buffer.clear();
+        serde_json::to_writer(&mut *buffer, json).expect("invalid json");
+        Self::from_bytes(&*buffer)
+    }
+
+    /// serialize LSP message into a writer, prepending the appropriate content-length header
+    pub async fn to_writer<W>(&self, mut writer: W) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        writer
+            .write_all(format!("Content-Length: {}\r\n\r\n", self.bytes.len()).as_bytes())
+            .await?;
+        writer.write_all(&*self.bytes).await?;
+        writer.flush().await
     }
 }
