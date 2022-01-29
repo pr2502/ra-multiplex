@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         .format_target(false)
         .init();
 
-    let registry = InstanceRegistry::new();
+    let registry = InstanceRegistry::default();
 
     let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), proto::PORT))
         .await

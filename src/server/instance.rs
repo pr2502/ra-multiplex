@@ -50,7 +50,7 @@ impl InitializeCache {
 type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
 pub struct RaInstance {
-    kill: Notify,
+    close: Notify,
     project_root: PathBuf,
     pub init_cache: InitializeCache,
     pub message_readers: MessageReaders,
@@ -59,67 +59,71 @@ pub struct RaInstance {
 
 #[derive(Clone)]
 pub struct InstanceRegistry {
-    inner: Arc<InnerRegistry>,
+    map: Arc<Mutex<HashMap<PathBuf, Arc<RaInstance>>>>,
 }
 
 #[derive(Default)]
-struct InnerRegistry {
-    reap_instances: Notify,
-    map: Mutex<HashMap<PathBuf, Arc<RaInstance>>>,
+struct InnerRegistry {}
+
+impl Default for InstanceRegistry {
+    fn default() -> Self {
+        let registry = InstanceRegistry {
+            map: Arc::default(),
+        };
+        registry.spawn_gc_task();
+        registry
+    }
 }
 
 impl InstanceRegistry {
-    pub fn new() -> Self {
-        let registry = InstanceRegistry {
-            inner: Arc::new(InnerRegistry::default()),
-        };
-        registry.spawn_reaper_task();
-        registry
-    }
-
-    fn spawn_reaper_task(&self) {
+    /// periodically checks for closed recv channels for every instance
+    ///
+    /// if an instance has 0 unclosed channels a timeout task is spawned to clean it up
+    fn spawn_gc_task(&self) {
         let registry = self.clone();
+        let mut closed_ports = Vec::new();
         task::spawn(async move {
             loop {
-                // check periodically if there are no clients since the notification only triggers
-                // if rust-analyzer tries to send a message to a disconnected client
-                select! {
-                    _ = registry.inner.reap_instances.notified() => {}
-                    _ = time::sleep(Duration::from_secs(10)) => {}
-                };
-                for (path, instance) in registry.inner.map.lock().await.iter() {
-                    if instance.message_readers.read().await.is_empty() {
+                time::sleep(Duration::from_secs(10)).await;
+
+                for (path, instance) in registry.map.lock().await.iter() {
+                    for (port, sender) in instance.message_readers.read().await.iter() {
+                        if sender.is_closed() {
+                            closed_ports.push(*port);
+                        }
+                    }
+                    let mut message_readers = instance.message_readers.write().await;
+                    for port in closed_ports.drain(..) {
+                        message_readers.remove(&port);
+                    }
+                    if message_readers.is_empty() {
                         registry.spawn_timeout_task(path);
                         let path = path.display();
-                        log::warn!("[{path}] no clients, kill timeout started");
+                        log::warn!("[{path}] no clients, close timeout started");
                     }
                 }
             }
         });
     }
 
+    /// closes a rust-analyzer instance after a timeout if it still doesn't have any
     fn spawn_timeout_task(&self, path: &Path) {
         let registry = self.clone();
         let path = path.to_owned();
         task::spawn(async move {
-            // wait before trying to kill rust-analyzer in case another client connects
             time::sleep(Duration::from_secs(5 * 60)).await;
 
-            if let Some(instance) = registry.inner.map.lock().await.get(&path) {
+            if let Some(instance) = registry.map.lock().await.get(&path) {
                 if instance.message_readers.read().await.is_empty() {
-                    instance.kill.notify_one();
-                } else {
-                    // a client connected before the timeout finished
+                    instance.close.notify_one();
                 }
-            } else {
-                let path = path.display();
-                log::warn!("[{path}] instance was already removed");
             }
         });
     }
 
+    /// find or spawn an instance for a `project_root`
     pub async fn get(&self, project_root: &Path) -> Result<Arc<RaInstance>> {
-        let mut map = self.inner.map.lock().await;
+        let mut map = self.map.lock().await;
         match map.entry(project_root.to_owned()) {
             Entry::Occupied(e) => Ok(Arc::clone(e.get())),
             Entry::Vacant(e) => {
@@ -148,16 +152,16 @@ impl RaInstance {
         let (message_writer, rx) = mpsc::channel(64);
 
         let instance = Arc::new(RaInstance {
-            kill: Notify::new(),
+            close: Notify::new(),
             project_root: project_root.to_owned(),
             init_cache: InitializeCache::default(),
             message_readers: MessageReaders::default(),
             message_writer,
         });
 
-        instance.spawn_wait_task(child, registry.clone());
+        instance.spawn_wait_task(child, registry);
         instance.spawn_stderr_task(stderr);
-        instance.spawn_stdout_task(stdout, registry);
+        instance.spawn_stdout_task(stdout);
         instance.spawn_stdin_task(rx, stdin);
 
         let path = project_root.display();
@@ -195,19 +199,13 @@ impl RaInstance {
     }
 
     /// read messages from server stdout and distribute them to client channels
-    fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout, registry: InstanceRegistry) {
+    fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout) {
         let stdout = BufReader::new(stdout);
         let instance = Arc::clone(self);
         let path = instance.project_root.display().to_string();
 
         task::spawn(async move {
-            match read_server_socket(
-                stdout,
-                &instance.message_readers,
-                &instance.init_cache,
-                &registry,
-            )
-            .await
+            match read_server_socket(stdout, &instance.message_readers, &instance.init_cache).await
             {
                 Err(err) => log::error!("[{path}] error reading from stdout: {err:?}"),
                 Ok(_) => log::info!("[{path}] instance stdout closed"),
@@ -242,13 +240,13 @@ impl RaInstance {
             let mut child = child;
             loop {
                 select! {
-                    _ = instance.kill.notified() => {
+                    _ = instance.close.notified() => {
                         if let Err(err) = child.start_kill() {
-                            log::error!("[{path}] failed to kill rust-analyzer: {err}");
+                            log::error!("[{path}] failed to close rust-analyzer: {err}");
                         }
                     }
                     exit = child.wait() => {
-                        registry.inner.map.lock().await.remove(&project_root);
+                        registry.map.lock().await.remove(&project_root);
                         match exit {
                             Ok(status) => {
                                 let success = if status.success() {
@@ -291,13 +289,11 @@ async fn read_server_socket<R>(
     mut reader: R,
     senders: &MessageReaders,
     init_cache: &InitializeCache,
-    registry: &InstanceRegistry,
 ) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
 {
     let mut buffer = Vec::new();
-    let mut disconnected_clients = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
         log::trace!("{}", Value::Object(json.clone()));
@@ -360,29 +356,18 @@ where
 
             if let Some(sender) = senders.read().await.get(&port) {
                 let message = Message::from_json(&json, &mut buffer);
-                if sender.send(message).await.is_err() {
-                    disconnected_clients.push(port);
-                }
+                // ignore closed channels
+                let _ignore = sender.send(message).await;
             } else {
                 log::warn!("[{port}] no client");
             }
         } else {
             // notification messages without an id are sent to all clients
             let message = Message::from_bytes(bytes);
-            for (port, sender) in senders.read().await.iter() {
-                if sender.send(message.clone()).await.is_err() {
-                    disconnected_clients.push(*port);
-                }
+            for sender in senders.read().await.values() {
+                // ignore closed channels
+                let _ignore = sender.send(message.clone()).await;
             }
-        }
-
-        // drop `Sender`s of disconnected clients
-        if !disconnected_clients.is_empty() {
-            let mut senders = senders.write().await;
-            for port in disconnected_clients.drain(..) {
-                senders.remove(&port);
-            }
-            registry.inner.reap_instances.notify_waiters();
         }
     }
     Ok(())

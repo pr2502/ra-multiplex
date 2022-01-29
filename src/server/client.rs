@@ -10,8 +10,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufRead, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::task;
+use tokio::sync::{mpsc, Notify};
+use tokio::{select, task};
 
 pub struct Client {
     port: u16,
@@ -37,8 +37,9 @@ impl Client {
         client.wait_for_initialize_request(&mut socket_read).await?;
 
         let (client_tx, client_rx) = client.register_client_with_instance().await;
-        client.spawn_input_task(client_rx, socket_write);
-        client.spawn_output_task(socket_read);
+        let client_close = Arc::new(Notify::new());
+        client.spawn_input_task(client_rx, socket_write, Arc::clone(&client_close));
+        client.spawn_output_task(socket_read, client_close);
 
         client.wait_for_initialize_response(client_tx).await;
 
@@ -99,10 +100,26 @@ impl Client {
         (client_tx, client_rx)
     }
 
-    fn spawn_input_task(&self, mut rx: mpsc::Receiver<Message>, mut socket_write: OwnedWriteHalf) {
+    fn spawn_input_task(
+        &self,
+        mut rx: mpsc::Receiver<Message>,
+        mut socket_write: OwnedWriteHalf,
+        close: Arc<Notify>,
+    ) {
         let port = self.port;
         task::spawn(async move {
-            while let Some(message) = rx.recv().await {
+            // unlike the output task, here we first wait on the channel which is going to
+            // block until the rust-analyzer server sends a notification, however if we're the last
+            // client and have just closed the server is unlikely to send any. this results in the
+            // last client often falsely hanging while the gc task depends on the input channels being
+            // closed to detect a disconnected client.
+            //
+            // to solve this we use a notification from the output task which closes as soon as the
+            // tcp connection from client is closed.
+            while let Some(message) = select! {
+                _ignore = close.notified() => None,
+                message = rx.recv() => message,
+            } {
                 if let Err(err) = message.to_writer(&mut socket_write).await {
                     match err.kind() {
                         // ignore benign errors, treat as socket close
@@ -117,7 +134,7 @@ impl Client {
         });
     }
 
-    fn spawn_output_task(&self, mut socket_read: BufReader<OwnedReadHalf>) {
+    fn spawn_output_task(&self, mut socket_read: BufReader<OwnedReadHalf>, close: Arc<Notify>) {
         let port = self.port;
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
@@ -125,7 +142,10 @@ impl Client {
             match read_client_socket(&mut socket_read, instance_tx, port, &instance.init_cache)
                 .await
             {
-                Ok(_) => log::info!("[{port}] client output closed"),
+                Ok(_) => {
+                    log::info!("[{port}] client output closed");
+                    close.notify_one(); // close the input channel as well
+                }
                 Err(err) => log::error!("[{port}] error reading client output: {err:?}"),
             }
         });
