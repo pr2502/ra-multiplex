@@ -212,6 +212,7 @@ where
     R: AsyncBufRead + Unpin,
 {
     let mut buffer = Vec::new();
+    let mut disconnected_clients = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
         log::trace!("{}", Value::Object(json.clone()));
@@ -273,25 +274,28 @@ where
             json.insert("id".to_owned(), old_id);
 
             if let Some(sender) = senders.read().await.get(&port) {
-                sender
-                    .send(Message::from_json(&json, &mut buffer))
-                    .await
-                    .ok()
-                    .context("forward server response")?;
+                let message = Message::from_json(&json, &mut buffer);
+                if sender.send(message).await.is_err() {
+                    disconnected_clients.push(port);
+                }
             } else {
                 log::warn!("[{port}] no client");
             }
         } else {
             // notification messages without an id are sent to all clients
             let message = Message::from_bytes(bytes);
-            for sender in senders.read().await.values() {
-                sender
-                    .send(message.clone())
-                    .await
-                    .ok()
-                    // FIXME do not crash here: client is disconnected, remove its sender from the
-                    // map and continue
-                    .context("forward server notification")?;
+            for (port, sender) in senders.read().await.iter() {
+                if sender.send(message.clone()).await.is_err() {
+                    disconnected_clients.push(*port);
+                }
+            }
+        }
+
+        // drop `Sender`s of disconnected clients
+        if !disconnected_clients.is_empty() {
+            let mut senders = senders.write().await;
+            for port in disconnected_clients.drain(..) {
+                senders.remove(&port);
             }
         }
     }

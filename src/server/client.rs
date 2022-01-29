@@ -1,4 +1,4 @@
-use crate::server::instance::{InstanceRegistry, InitializeCache, RaInstance};
+use crate::server::instance::{InitializeCache, InstanceRegistry, RaInstance};
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
 use ra_multiplex::proto;
@@ -108,12 +108,12 @@ impl Client {
                         // ignore benign errors, treat as socket close
                         ErrorKind::BrokenPipe => {}
                         // report fatal errors
-                        _ => log::error!("[{port}] error writing client output: {err}"),
+                        _ => log::error!("[{port}] error writing client input: {err}"),
                     }
                     break; // break on any error
                 }
             }
-            log::info!("[{port}] client output closed");
+            log::info!("[{port}] client input closed");
         });
     }
 
@@ -122,9 +122,11 @@ impl Client {
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
         task::spawn(async move {
-            match read_client_socket(&mut socket_read, instance_tx, port, &instance.init_cache).await {
-                Ok(_) => log::info!("[{port}] client input closed"),
-                Err(err) => log::error!("[{port}] error reading client input: {err:?}"),
+            match read_client_socket(&mut socket_read, instance_tx, port, &instance.init_cache)
+                .await
+            {
+                Ok(_) => log::info!("[{port}] client output closed"),
+                Err(err) => log::error!("[{port}] error reading client output: {err:?}"),
             }
         });
     }
@@ -176,7 +178,6 @@ where
                 continue;
             }
         }
-
 
         if let Some(id) = json.get("id") {
             // messages containing an id need the id modified so we can discern the client to send
