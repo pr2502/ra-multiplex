@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use ra_multiplex::config::Config;
-use ra_multiplex::proto;
+use ra_multiplex::common::config::Config;
+use ra_multiplex::common::proto;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::{io, task};

@@ -1,0 +1,5 @@
+instance_timeout = 300
+gc_interval = 10
+listen = "127.0.0.1"
+port = 27631
+log_filters = "info"

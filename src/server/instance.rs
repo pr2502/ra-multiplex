@@ -1,7 +1,7 @@
 use crate::server::async_once_cell::AsyncOnceCell;
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
-use ra_multiplex::config::Config;
+use ra_multiplex::common::config::Config;
 use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;

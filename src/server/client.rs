@@ -1,7 +1,7 @@
 use crate::server::instance::{InitializeCache, InstanceRegistry, RaInstance};
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
-use ra_multiplex::proto;
+use ra_multiplex::common::proto;
 use serde_json::Value;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};

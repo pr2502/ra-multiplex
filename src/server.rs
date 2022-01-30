@@ -9,7 +9,7 @@
 use crate::server::client::Client;
 use crate::server::instance::InstanceRegistry;
 use anyhow::{Context, Result};
-use ra_multiplex::config::Config;
+use ra_multiplex::common::config::Config;
 use tokio::net::TcpListener;
 use tokio::task;
 
