@@ -1,4 +1,7 @@
-# ra-multiplex
+# ra-multiplex &emsp; [![Latest Version]][crates.io]
+
+[Latest Version]: https://img.shields.io/crates/v/ra-multiplex.svg
+[crates.io]: https://crates.io/crates/ra-multiplex
 
 Multiplex server for `rust-analyzer` allows multiple LSP clients (editor
 windows) to share a single `rust-analyzer` instance per cargo workspace.
