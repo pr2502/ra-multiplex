@@ -2,7 +2,6 @@
 name = "ra-multiplex"
 version = "0.1.2"
 description = "share one rust-analyzer server instance between multiple LSP clients to save resources"
-documentation = "https://docs.rs/ra-multiplex"
 repository = "https://github.com/pr2502/ra-multiplex"
 license = "MIT"
 edition = "2021"
