@@ -12,25 +12,17 @@ use std::str::{self, FromStr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::{select, task, time};
 
+/// keeps track of the initialize/initialized handshake for an instance
+#[derive(Default)]
 pub struct InitializeCache {
     request_sent: AtomicBool,
     notif_sent: AtomicBool,
     pub response: AsyncOnceCell<Message>,
-}
-
-impl Default for InitializeCache {
-    fn default() -> Self {
-        InitializeCache {
-            request_sent: AtomicBool::new(false),
-            notif_sent: AtomicBool::new(false),
-            response: AsyncOnceCell::default(),
-        }
-    }
 }
 
 impl InitializeCache {
@@ -47,10 +39,14 @@ impl InitializeCache {
     }
 }
 
-type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
+pub type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
 pub struct RaInstance {
+    pid: u32,
+    /// wakes up the wait_task and asks it to send SIGKILL to the instance
     close: Notify,
+    /// make sure only one timeout_task is running for an instance
+    timeout_running: AtomicBool,
     project_root: PathBuf,
     pub init_cache: InitializeCache,
     pub message_readers: MessageReaders,
@@ -61,9 +57,6 @@ pub struct RaInstance {
 pub struct InstanceRegistry {
     map: Arc<Mutex<HashMap<PathBuf, Arc<RaInstance>>>>,
 }
-
-#[derive(Default)]
-struct InnerRegistry {}
 
 impl Default for InstanceRegistry {
     fn default() -> Self {
@@ -97,9 +90,12 @@ impl InstanceRegistry {
                         message_readers.remove(&port);
                     }
                     if message_readers.is_empty() {
-                        registry.spawn_timeout_task(path);
-                        let path = path.display();
-                        log::warn!("[{path}] no clients, close timeout started");
+                        if !instance.timeout_running.swap(true, Ordering::SeqCst) {
+                            registry.spawn_timeout_task(path);
+                            let pid = instance.pid;
+                            let path = path.display();
+                            log::warn!("[{path} {pid}] no clients, close timeout started");
+                        }
                     }
                 }
             }
@@ -116,6 +112,8 @@ impl InstanceRegistry {
             if let Some(instance) = registry.map.lock().await.get(&path) {
                 if instance.message_readers.read().await.is_empty() {
                     instance.close.notify_one();
+                } else {
+                    instance.timeout_running.store(false, Ordering::SeqCst);
                 }
             }
         });
@@ -146,13 +144,16 @@ impl RaInstance {
             .spawn()
             .context("couldn't spawn rust-analyzer")?;
 
+        let pid = child.id().context("child exited early, couldn't get PID")?;
         let stderr = child.stderr.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stdin = child.stdin.take().unwrap();
         let (message_writer, rx) = mpsc::channel(64);
 
         let instance = Arc::new(RaInstance {
+            pid,
             close: Notify::new(),
+            timeout_running: AtomicBool::new(false),
             project_root: project_root.to_owned(),
             init_cache: InitializeCache::default(),
             message_readers: MessageReaders::default(),
@@ -165,13 +166,14 @@ impl RaInstance {
         instance.spawn_stdin_task(rx, stdin);
 
         let path = project_root.display();
-        log::info!("[{path}] spawned rust-analyzer");
+        log::info!("[{path} {pid}] spawned rust-analyzer");
 
         Ok(instance)
     }
 
     /// read errors from server stderr and log them
     fn spawn_stderr_task(self: &Arc<Self>, stderr: ChildStderr) {
+        let pid = self.pid;
         let path = self.project_root.display().to_string();
         let mut stderr = BufReader::new(stderr);
         let mut buffer = String::new();
@@ -182,16 +184,16 @@ impl RaInstance {
                 match stderr.read_line(&mut buffer).await {
                     Ok(0) => {
                         // reached EOF
-                        log::info!("[{path}] instance stderr closed");
+                        log::info!("[{path} {pid}] instance stderr closed");
                         break;
                     }
                     Ok(_) => {
                         let line = buffer.trim_end(); // remove trailing '\n' or possibly '\r\n'
-                        log::error!("[{path}] {line}");
+                        log::error!("[{path} {pid}] {line}");
                     }
                     Err(err) => {
                         let err = anyhow::Error::from(err);
-                        log::error!("[{path}] error reading from stderr: {err:?}");
+                        log::error!("[{path} {pid}] error reading from stderr: {err:?}");
                     }
                 }
             }
@@ -202,19 +204,21 @@ impl RaInstance {
     fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout) {
         let stdout = BufReader::new(stdout);
         let instance = Arc::clone(self);
+        let pid = self.pid;
         let path = instance.project_root.display().to_string();
 
         task::spawn(async move {
             match read_server_socket(stdout, &instance.message_readers, &instance.init_cache).await
             {
-                Err(err) => log::error!("[{path}] error reading from stdout: {err:?}"),
-                Ok(_) => log::info!("[{path}] instance stdout closed"),
+                Err(err) => log::error!("[{path} {pid}] error reading from stdout: {err:?}"),
+                Ok(_) => log::info!("[{path} {pid}] instance stdout closed"),
             }
         });
     }
 
     /// read messages sent by clients from a channel and write them into server stdin
     fn spawn_stdin_task(self: &Arc<Self>, rx: mpsc::Receiver<Message>, stdin: ChildStdin) {
+        let pid = self.pid;
         let path = self.project_root.display().to_string();
         let mut receiver = rx;
         let mut stdin = stdin;
@@ -223,17 +227,18 @@ impl RaInstance {
             while let Some(message) = receiver.recv().await {
                 if let Err(err) = message.to_writer(&mut stdin).await {
                     let err = anyhow::Error::from(err);
-                    log::error!("[{path}] error writing to stdin: {err:?}");
+                    log::error!("[{path} {pid}] error writing to stdin: {err:?}");
                     break;
                 }
             }
-            log::info!("[{path}] instance stdin closed");
+            log::info!("[{path} {pid}] instance stdin closed");
         });
     }
 
     /// waits for child and logs when it exits
     fn spawn_wait_task(self: &Arc<Self>, child: Child, registry: InstanceRegistry) {
         let project_root = self.project_root.clone();
+        let pid = self.pid;
         let path = project_root.display().to_string();
         let instance = Arc::clone(self);
         task::spawn(async move {
@@ -242,7 +247,7 @@ impl RaInstance {
                 select! {
                     _ = instance.close.notified() => {
                         if let Err(err) = child.start_kill() {
-                            log::error!("[{path}] failed to close rust-analyzer: {err}");
+                            log::error!("[{path} {pid}] failed to close rust-analyzer: {err}");
                         }
                     }
                     exit = child.wait() => {
@@ -261,9 +266,10 @@ impl RaInstance {
                                 if let Some(signal) = status.signal() {
                                     details.write_fmt(format_args!(" signal {signal}")).unwrap();
                                 }
-                                log::error!("[{path}] child exited {success}{details}");
+                                let pid = instance.pid;
+                                log::error!("[{path} {pid}] child exited {success}{details}");
                             }
-                            Err(err) => log::error!("[{path}] error waiting for child: {err}"),
+                            Err(err) => log::error!("[{path} {pid}] error waiting for child: {err}"),
                         }
                         break;
                     }
@@ -285,14 +291,11 @@ fn parse_tagged_id(tagged: &str) -> Result<(u16, Value)> {
     Ok((port, old_id))
 }
 
-async fn read_server_socket<R>(
-    mut reader: R,
+async fn read_server_socket(
+    mut reader: BufReader<ChildStdout>,
     senders: &MessageReaders,
     init_cache: &InitializeCache,
-) -> Result<()>
-where
-    R: AsyncBufRead + Unpin,
-{
+) -> Result<()> {
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
@@ -305,7 +308,10 @@ where
                     // this is a response to the InitializeRequest, we need to process it
                     // separately
                     log::debug!("recv InitializeRequest response");
-                    // NOTE we just guess the first request had originally the id Number(0)
+                    // TODO we just guess the first request had originally the id Number(0), we
+                    // could keep track for each client what request id they used, but at least
+                    // coc-rust-analyzer uses it consistently so we'll leave this until it breaks
+                    // for someone
                     json.insert("id".to_owned(), Value::Number(0.into()));
                     init_cache
                         .response

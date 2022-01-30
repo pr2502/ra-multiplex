@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::Arc;
-use tokio::io::{AsyncBufRead, BufReader};
+use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Notify};
@@ -20,7 +20,7 @@ pub struct Client {
 
 impl Client {
     /// finds or spawns a rust-analyzer instance and connects the client
-    pub async fn process(socket: TcpStream, port: u16, registry: InstanceRegistry) -> Result<Self> {
+    pub async fn process(socket: TcpStream, port: u16, registry: InstanceRegistry) -> Result<()> {
         let (socket_read, socket_write) = socket.into_split();
         let mut socket_read = BufReader::new(socket_read);
 
@@ -42,8 +42,7 @@ impl Client {
         client.spawn_output_task(socket_read, client_close);
 
         client.wait_for_initialize_response(client_tx).await;
-
-        Ok(client)
+        Ok(())
     }
 
     async fn wait_for_initialize_request(
@@ -134,14 +133,12 @@ impl Client {
         });
     }
 
-    fn spawn_output_task(&self, mut socket_read: BufReader<OwnedReadHalf>, close: Arc<Notify>) {
+    fn spawn_output_task(&self, socket_read: BufReader<OwnedReadHalf>, close: Arc<Notify>) {
         let port = self.port;
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
         task::spawn(async move {
-            match read_client_socket(&mut socket_read, instance_tx, port, &instance.init_cache)
-                .await
-            {
+            match read_client_socket(socket_read, instance_tx, port, &instance.init_cache).await {
                 Ok(_) => {
                     log::info!("[{port}] client output closed");
                     close.notify_one(); // close the input channel as well
@@ -176,20 +173,17 @@ fn find_project_root(client_cwd: &str) -> Option<PathBuf> {
 
 /// reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
 /// to the writer
-async fn read_client_socket<R>(
-    mut reader: R,
+async fn read_client_socket(
+    mut reader: BufReader<OwnedReadHalf>,
     sender: mpsc::Sender<Message>,
     port: u16,
     init_cache: &InitializeCache,
-) -> Result<()>
-where
-    R: AsyncBufRead + Unpin,
-{
+) -> Result<()> {
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
         if matches!(json.get("method"), Some(Value::String(method)) if method == "initialized") {
-            // initialized notification can only be sent by one client
+            // initialized notification can only be sent once per server
             if init_cache.attempt_send_notif() {
                 log::debug!("[{port}] send InitializedNotification");
             } else {
@@ -200,7 +194,7 @@ where
         }
 
         if let Some(id) = json.get("id") {
-            // messages containing an id need the id modified so we can discern the client to send
+            // messages containing an id need the id modified so we can discern which client to send
             // the response to
             let tagged_id = tag_id(port, id)?;
             json.insert("id".to_owned(), Value::String(tagged_id));
