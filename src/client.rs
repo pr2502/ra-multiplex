@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
+use ra_multiplex::config::Config;
 use ra_multiplex::proto;
-use std::net::Ipv4Addr;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::{io, task};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let stream = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 1), proto::PORT))
+    let config = Config::load_or_default();
+
+    let stream = TcpStream::connect((config.listen, config.port))
         .await
         .context("connect")?;
     let (mut read_stream, mut write_stream) = stream.into_split();

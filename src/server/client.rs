@@ -129,7 +129,8 @@ impl Client {
                     break; // break on any error
                 }
             }
-            log::info!("[{port}] client input closed");
+            log::debug!("[{port}] client input closed");
+            log::info!("[{port}] client disconnected");
         });
     }
 
@@ -140,7 +141,7 @@ impl Client {
         task::spawn(async move {
             match read_client_socket(socket_read, instance_tx, port, &instance.init_cache).await {
                 Ok(_) => {
-                    log::info!("[{port}] client output closed");
+                    log::debug!("[{port}] client output closed");
                     close.notify_one(); // close the input channel as well
                 }
                 Err(err) => log::error!("[{port}] error reading client output: {err:?}"),

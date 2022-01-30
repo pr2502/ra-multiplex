@@ -9,8 +9,7 @@
 use crate::server::client::Client;
 use crate::server::instance::InstanceRegistry;
 use anyhow::{Context, Result};
-use ra_multiplex::proto;
-use std::net::Ipv4Addr;
+use ra_multiplex::config::Config;
 use tokio::net::TcpListener;
 use tokio::task;
 
@@ -23,18 +22,12 @@ mod server {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_default_env()
-        .format_timestamp(None)
-        .format_module_path(false)
-        .format_target(false)
-        .init();
-
+    let config = Config::load_or_default();
     let registry = InstanceRegistry::default();
 
-    let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), proto::PORT))
+    let listener = TcpListener::bind((config.listen, config.port))
         .await
         .context("listen")?;
-
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {

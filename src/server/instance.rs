@@ -1,6 +1,7 @@
 use crate::server::async_once_cell::AsyncOnceCell;
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
+use ra_multiplex::config::Config;
 use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -73,11 +74,15 @@ impl InstanceRegistry {
     ///
     /// if an instance has 0 unclosed channels a timeout task is spawned to clean it up
     fn spawn_gc_task(&self) {
+        let config = Config::load_or_default();
+        let gc_interval = config.gc_interval.into();
+        let instance_timeout = config.instance_timeout.map(<_>::from);
+
         let registry = self.clone();
         let mut closed_ports = Vec::new();
         task::spawn(async move {
             loop {
-                time::sleep(Duration::from_secs(10)).await;
+                time::sleep(Duration::from_secs(gc_interval)).await;
 
                 for (path, instance) in registry.map.lock().await.iter() {
                     for (port, sender) in instance.message_readers.read().await.iter() {
@@ -89,13 +94,18 @@ impl InstanceRegistry {
                     for port in closed_ports.drain(..) {
                         message_readers.remove(&port);
                     }
-                    if message_readers.is_empty() {
-                        if !instance.timeout_running.swap(true, Ordering::SeqCst) {
-                            registry.spawn_timeout_task(path);
-                            let pid = instance.pid;
-                            let path = path.display();
-                            log::warn!("[{path} {pid}] no clients, close timeout started");
+                    if let Some(instance_timeout) = instance_timeout {
+                        if message_readers.is_empty() {
+                            if !instance.timeout_running.swap(true, Ordering::SeqCst) {
+                                // only spawn the timeout task if one is not already running
+                                registry.spawn_timeout_task(path, instance_timeout);
+                                let pid = instance.pid;
+                                let path = path.display();
+                                log::warn!("[{path} {pid}] no clients, close timeout started");
+                            }
                         }
+                    } else {
+                        // if there is no instance timeout we don't need to spawn the timeout task
                     }
                 }
             }
@@ -103,18 +113,20 @@ impl InstanceRegistry {
     }
 
     /// closes a rust-analyzer instance after a timeout if it still doesn't have any
-    fn spawn_timeout_task(&self, path: &Path) {
+    fn spawn_timeout_task(&self, path: &Path, instance_timeout: u64) {
         let registry = self.clone();
         let path = path.to_owned();
         task::spawn(async move {
-            time::sleep(Duration::from_secs(5 * 60)).await;
+            time::sleep(Duration::from_secs(instance_timeout)).await;
 
             if let Some(instance) = registry.map.lock().await.get(&path) {
                 if instance.message_readers.read().await.is_empty() {
                     instance.close.notify_one();
-                } else {
-                    instance.timeout_running.store(false, Ordering::SeqCst);
                 }
+                // let anoter timeout task spawn
+                instance.timeout_running.store(false, Ordering::SeqCst);
+            } else {
+                // instance has already been deleted
             }
         });
     }
@@ -251,7 +263,13 @@ impl RaInstance {
                         }
                     }
                     exit = child.wait() => {
+                        // if the instance wasn't meant to die and still has clients connected,
+                        // those clients will get disconnected when they attempt to send the next
+                        // message. we'll rely on the editor client to restart the client, start a
+                        // new connection and we'll spawn another instance like we'd with any other
+                        // new client
                         registry.map.lock().await.remove(&project_root);
+
                         match exit {
                             Ok(status) => {
                                 let success = if status.success() {
