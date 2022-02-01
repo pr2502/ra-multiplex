@@ -200,17 +200,17 @@ async fn read_client_socket(
             let tagged_id = tag_id(port, id)?;
             json.insert("id".to_owned(), Value::String(tagged_id));
 
-            sender
-                .send(Message::from_json(&json, &mut buffer))
-                .await
-                .context("forward client request")?;
+            let message = Message::from_json(&json, &mut buffer);
+            if sender.send(message).await.is_err() {
+                break;
+            }
         } else {
             // notification messages without an id don't need any modification and can be forwarded
             // to rust-analyzer as is
-            sender
-                .send(Message::from_bytes(bytes))
-                .await
-                .context("forward client notification")?;
+            let message = Message::from_bytes(bytes);
+            if sender.send(message).await.is_err() {
+                break;
+            }
         }
     }
     Ok(())

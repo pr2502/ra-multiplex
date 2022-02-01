@@ -25,19 +25,17 @@ async fn main() -> Result<()> {
     let config = Config::load_or_default();
     let registry = InstanceRegistry::default();
 
-    let listener = TcpListener::bind(config.listen)
-        .await
-        .context("listen")?;
+    let listener = TcpListener::bind(config.listen).await.context("listen")?;
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {
                 let port = addr.port();
                 let registry = registry.clone();
 
-                log::info!("[{port}] client accepted");
+                log::info!("[{port}] client connected");
                 task::spawn(async move {
                     match Client::process(socket, port, registry).await {
-                        Ok(_) => log::info!("[{port}] client initialized"),
+                        Ok(_) => log::debug!("[{port}] client initialized"),
                         Err(err) => log::error!("[{port}] client error: {err:?}"),
                     }
                 });

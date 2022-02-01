@@ -6,6 +6,7 @@ use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::io::ErrorKind;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -101,7 +102,7 @@ impl InstanceRegistry {
                                 registry.spawn_timeout_task(path, instance_timeout);
                                 let pid = instance.pid;
                                 let path = path.display();
-                                log::warn!("[{path} {pid}] no clients, close timeout started");
+                                log::warn!("[{path} {pid}] no clients, close timeout started ({instance_timeout} seconds)");
                             }
                         }
                     } else {
@@ -196,7 +197,7 @@ impl RaInstance {
                 match stderr.read_line(&mut buffer).await {
                     Ok(0) => {
                         // reached EOF
-                        log::info!("[{path} {pid}] instance stderr closed");
+                        log::debug!("[{path} {pid}] instance stderr closed");
                         break;
                     }
                     Ok(_) => {
@@ -223,7 +224,7 @@ impl RaInstance {
             match read_server_socket(stdout, &instance.message_readers, &instance.init_cache).await
             {
                 Err(err) => log::error!("[{path} {pid}] error reading from stdout: {err:?}"),
-                Ok(_) => log::info!("[{path} {pid}] instance stdout closed"),
+                Ok(_) => log::debug!("[{path} {pid}] instance stdout closed"),
             }
         });
     }
@@ -238,12 +239,18 @@ impl RaInstance {
         task::spawn(async move {
             while let Some(message) = receiver.recv().await {
                 if let Err(err) = message.to_writer(&mut stdin).await {
-                    let err = anyhow::Error::from(err);
-                    log::error!("[{path} {pid}] error writing to stdin: {err:?}");
+                    match err.kind() {
+                        // stdin is closed, no need to log an error
+                        ErrorKind::BrokenPipe => {}
+                        _ => {
+                            let err = anyhow::Error::from(err);
+                            log::error!("[{path} {pid}] error writing to stdin: {err:?}");
+                        }
+                    }
                     break;
                 }
             }
-            log::info!("[{path} {pid}] instance stdin closed");
+            log::debug!("[{path} {pid}] instance stdin closed");
         });
     }
 

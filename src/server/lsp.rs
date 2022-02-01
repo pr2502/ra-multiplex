@@ -32,7 +32,7 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::fmt::{self, Debug};
-use std::io;
+use std::io::{self, ErrorKind};
 use std::str;
 use std::sync::Arc;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
@@ -62,44 +62,45 @@ impl Header {
 
         loop {
             buffer.clear();
-            let bytes_read = reader
-                .read_until(b'\n', &mut *buffer)
-                .await
-                .context("reading header")?;
-            if bytes_read == 0 {
-                return Ok(None);
+            match reader.read_until(b'\n', &mut *buffer).await {
+                Ok(0) => return Ok(None), // EOF
+                Ok(_) => {}
+                Err(err) => match err.kind() {
+                    // reader is closed for some reason, no need to log an error about it
+                    ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe => return Ok(None),
+                    _ => bail!(err),
+                },
             }
             let header_text = buffer
                 .strip_suffix(b"\r\n")
                 .context("malformed header, missing \\r\\n")?;
+            let header_text = str::from_utf8(header_text).context("malformed header")?;
 
             if header_text.is_empty() {
-                // header is separated by an empty line
+                // headers are separated by an empty line from the body
                 break;
             }
-            if let Some(value) = header_text.strip_prefix(b"Content-Type: ") {
-                ensure!(content_type.is_none(), "repeated content-type header");
-                content_type = Some(
-                    str::from_utf8(value)
-                        .context("content-type header")?
-                        .to_owned(),
-                );
-                continue;
+            let (name, value) = match header_text.split_once(": ") {
+                Some(split) => split,
+                None => bail!("malformed header, missing value separator: {}", header_text),
+            };
+
+            match name.to_ascii_lowercase().as_str() {
+                "content-type" => {
+                    ensure!(content_type.is_none(), "repeated header content-type");
+                    content_type = Some(value.to_owned());
+                }
+                "content-length" => {
+                    ensure!(content_length.is_none(), "repeated header content-length");
+                    content_length = Some(value.parse::<usize>().context("content-length header")?);
+                }
+                _ => bail!("unknown header: {name}"),
             }
-            if let Some(value) = header_text.strip_prefix(b"Content-Length: ") {
-                ensure!(content_length.is_none(), "repeated content-length header");
-                content_length = Some(
-                    str::from_utf8(value)
-                        .context("content-length header")?
-                        .parse::<usize>()
-                        .context("content-length header")?,
-                );
-                continue;
-            }
-            bail!("invalid header: {}", String::from_utf8_lossy(header_text));
         }
 
-        let content_length = content_length.context("missing content-length header")?;
+        let content_length = content_length.context("missing required header content-length")?;
         Ok(Some(Header {
             content_length,
             content_type,
@@ -126,12 +127,19 @@ where
 
     buffer.clear();
     buffer.resize(header.content_length, 0);
-    reader.read_exact(&mut *buffer).await.context("read body")?;
+    if let Err(err) = reader.read_exact(&mut *buffer).await {
+        match err.kind() {
+            // reader is closed for some reason, no need to log an error about it
+            ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe => return Ok(None),
+            _ => bail!(err),
+        }
+    }
 
     let bytes = buffer.as_slice();
-
-    let json: Map<String, Value> = serde_json::from_slice(bytes).context("invalid body")?;
-
+    let json = serde_json::from_slice(bytes).context("invalid body")?;
     Ok(Some((json, bytes)))
 }
 
