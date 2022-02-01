@@ -1,8 +1,8 @@
-use crate::server::instance::{InitializeCache, InstanceRegistry, RaInstance};
+use crate::server::instance::{InitializeCache, InstanceRegistry, RaInstance, INIT_REQUEST_ID};
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
 use ra_multiplex::common::proto;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str;
@@ -15,6 +15,7 @@ use tokio::{select, task};
 
 pub struct Client {
     port: u16,
+    initialize_request_id: Option<Value>,
     instance: Arc<RaInstance>,
 }
 
@@ -30,9 +31,11 @@ impl Client {
         let project_root = find_project_root(&proto_init.cwd)
             .with_context(|| format!("couldn't find project root for {}", &proto_init.cwd))?;
 
-        let instance = registry.get(&project_root).await?;
-
-        let client = Client { port, instance };
+        let mut client = Client {
+            port,
+            initialize_request_id: None,
+            instance: registry.get(&project_root).await?,
+        };
 
         client.wait_for_initialize_request(&mut socket_read).await?;
 
@@ -41,12 +44,14 @@ impl Client {
         client.spawn_input_task(client_rx, socket_write, Arc::clone(&client_close));
         client.spawn_output_task(socket_read, client_close);
 
-        client.wait_for_initialize_response(client_tx).await;
+        client
+            .wait_for_initialize_response(client_tx, &mut buffer)
+            .await?;
         Ok(())
     }
 
     async fn wait_for_initialize_request(
-        &self,
+        &mut self,
         socket_read: &mut BufReader<OwnedReadHalf>,
     ) -> Result<()> {
         let mut buffer = Vec::new();
@@ -58,16 +63,20 @@ impl Client {
             bail!("first client message was not InitializeRequest");
         }
         log::debug!("[{port}] recv InitializeRequest");
-        // this is an initialize request, it's special because it cannot
+        // this is an initialize request, it's special because it cannot be sent twice or
+        // rust-analyzer will crash.
+
+        // we save the request id so we can later use it for the response
+        self.initialize_request_id = Some(
+            json.remove("id")
+                .context("InitializeRequest is missing an `id`")?,
+        );
         if self.instance.init_cache.attempt_send_request() {
             // it haven't been sent yet, we can send it.
-
-            // instead of taggin the original id we replace it with a custom id that only
+            //
+            // instead of tagging the original id we replace it with a custom id that only
             // the `initialize` uses
-            json.insert(
-                "id".to_owned(),
-                Value::String("initialize_request".to_owned()),
-            );
+            json.insert("id".to_owned(), Value::String(INIT_REQUEST_ID.to_owned()));
 
             self.instance
                 .message_writer
@@ -80,11 +89,26 @@ impl Client {
         Ok(())
     }
 
-    async fn wait_for_initialize_response(&self, tx: mpsc::Sender<Message>) {
+    async fn wait_for_initialize_response(
+        &self,
+        tx: mpsc::Sender<Message>,
+        buffer: &mut Vec<u8>,
+    ) -> Result<()> {
         let port = self.port;
-        let message = self.instance.init_cache.response.get().await;
+        // parse the cached message and restore the `id` to the value this client expects
+        let response = self.instance.init_cache.response.get().await;
+        let mut json: Map<String, Value> = serde_json::from_slice(response.as_bytes())
+            .expect("BUG: cached initialize response was invalid");
+        json.insert(
+            "id".to_owned(),
+            self.initialize_request_id
+                .clone()
+                .expect("BUG: need to wait_for_initialize_request first"),
+        );
+        let message = Message::from_json(&json, buffer);
         log::debug!("[{port}] send response to InitializeRequest");
-        tx.send(message).await.unwrap();
+        tx.send(message).await.context("send initialize response")?;
+        Ok(())
     }
 
     async fn register_client_with_instance(

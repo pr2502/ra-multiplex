@@ -41,12 +41,9 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 /// Every message begins with a HTTP-style header
 ///
 /// Headers are terminated by `\r\n` sequence and the final header is followed by another `\r\n`.
-/// The currently recognized headers are `Content-Type` which is optional and contains a `string`
-/// (something like a MIME-type) and `Content-Length` which contains the lenght of the message body
+/// The currently recognized headers are `content-type` which is optional and contains a `string`
+/// (something like a MIME-type) and `content-length` which contains the lenght of the message body
 /// after the final `\r\n` of the header. Header names and values are separated by `: `.
-///
-/// TODO
-/// - we're parsing the headers case-sensitively, it's posible they're case insensitive like HTTP
 pub struct Header {
     pub content_length: usize,
     pub content_type: Option<String>,
@@ -161,6 +158,10 @@ impl Message {
         Self {
             bytes: Arc::from(bytes),
         }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &*self.bytes
     }
 
     /// construct a message from a serializable value, like JSON

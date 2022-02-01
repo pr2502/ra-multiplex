@@ -41,6 +41,9 @@ impl InitializeCache {
     }
 }
 
+/// dummy id used for the InitializeRequest and expected in the response
+pub const INIT_REQUEST_ID: &'static str = "ra-multiplex:initialize_request";
+
 pub type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
 pub struct RaInstance {
@@ -329,18 +332,13 @@ async fn read_server_socket(
         if let Some(id) = json.get("id") {
             // we tagged the request id so we expect to only receive tagged responses
             let tagged_id = match id {
-                Value::String(string) if string == "initialize_request" => {
+                Value::String(string) if string == INIT_REQUEST_ID => {
                     // this is a response to the InitializeRequest, we need to process it
                     // separately
                     log::debug!("recv InitializeRequest response");
-                    // TODO we just guess the first request had originally the id Number(0), we
-                    // could keep track for each client what request id they used, but at least
-                    // coc-rust-analyzer uses it consistently so we'll leave this until it breaks
-                    // for someone
-                    json.insert("id".to_owned(), Value::Number(0.into()));
                     init_cache
                         .response
-                        .set(Message::from_json(&json, &mut buffer))
+                        .set(Message::from_bytes(bytes))
                         .await
                         .ok() // throw away the Err(message), we don't need it and it doesn't implement std::error::Error
                         .context("received multiple InitializeRequest responses from instance")?;
