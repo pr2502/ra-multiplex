@@ -19,14 +19,13 @@ mod default {
         10
     }
 
-    pub fn listen() -> IpAddr {
-        // localhost
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+    pub fn listen() -> (IpAddr, u16) {
+        // localhost & some random unprivileged port
+        (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 27_631)
     }
 
-    pub fn port() -> u16 {
-        // some random unprivileged port
-        27_631
+    pub fn connect() -> (IpAddr, u16) {
+        listen()
     }
 
     pub fn log_filters() -> String {
@@ -89,10 +88,10 @@ pub struct Config {
     pub gc_interval: u32,
 
     #[serde(default = "default::listen")]
-    pub listen: IpAddr,
+    pub listen: (IpAddr, u16),
 
-    #[serde(default = "default::port")]
-    pub port: u16,
+    #[serde(default = "default::connect")]
+    pub connect: (IpAddr, u16),
 
     #[serde(default = "default::log_filters")]
     pub log_filters: String,
@@ -116,7 +115,7 @@ impl Config {
             instance_timeout: default::instance_timeout(),
             gc_interval: default::gc_interval(),
             listen: default::listen(),
-            port: default::port(),
+            connect: default::connect(),
             log_filters: default::log_filters(),
         }
     }

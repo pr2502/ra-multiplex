@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
     let config = Config::load_or_default();
     let registry = InstanceRegistry::default();
 
-    let listener = TcpListener::bind((config.listen, config.port))
+    let listener = TcpListener::bind(config.listen)
         .await
         .context("listen")?;
     loop {

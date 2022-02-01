@@ -85,7 +85,7 @@ instance_timeout = 300 # after 5 minutes
 # clients and possibly starts a timeout task. the value must be at least 1.
 gc_interval = 10 # every 10 seconds
 
-# ip address on which ra-multiplex-server listens
+# ip address and port on which ra-multiplex-server listens
 #
 # the default "127.0.0.1" only allows connections from localhost which is
 # preferred since the protocol doesn't worry about security.
@@ -93,14 +93,16 @@ gc_interval = 10 # every 10 seconds
 # same on its machine as on ra-multiplex's machine. if you want to run the
 # server on a different computer it's theoretically possible but at least for
 # now you're on your own.
-listen = "127.0.0.1" # localhost
-
-# tcp port number on which ra-multiplex-server listens
 #
 # ports below 1024 will typically require root privileges and should be
-# avoided, this only needs to change if another application happens to collide
-# with ra-multiplex.
-port = 27631 # random unprivileged port
+# avoided, the default was picked at random, this only needs to change if
+# another application happens to collide with ra-multiplex.
+listen = ["127.0.0.1", 27631] # localhost & some random unprivileged port
+
+# ip address and port to which ra-multiplex will connect to
+#
+# this should usually just match the value of `listen`
+connect = ["127.0.0.1", 27631] # same as `listen`
 
 # default log filters
 #

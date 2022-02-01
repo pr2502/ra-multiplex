@@ -9,7 +9,7 @@ use tokio::{io, task};
 async fn main() -> Result<()> {
     let config = Config::load_or_default();
 
-    let stream = TcpStream::connect((config.listen, config.port))
+    let stream = TcpStream::connect(config.connect)
         .await
         .context("connect")?;
     let (mut read_stream, mut write_stream) = stream.into_split();
