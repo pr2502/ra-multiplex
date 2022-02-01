@@ -205,12 +205,13 @@ dependencies = [
 
 [[package]]
 name = "ra-multiplex"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "directories",
  "env_logger",
  "log",
+ "once_cell",
  "serde",
  "serde_json",
  "tokio",

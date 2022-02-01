@@ -1,9 +1,9 @@
 use anyhow::Context;
 use directories::ProjectDirs;
+use once_cell::sync::OnceCell;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
-use std::lazy::SyncOnceCell;
 use std::net::{IpAddr, Ipv4Addr};
 
 mod default {
@@ -147,7 +147,7 @@ impl Config {
     ///
     /// initializes a global logger based on the configuration
     pub fn load_or_default() -> &'static Self {
-        static GLOBAL: SyncOnceCell<&'static Config> = SyncOnceCell::new();
+        static GLOBAL: OnceCell<&'static Config> = OnceCell::new();
         GLOBAL.get_or_init(|| {
             let (config, load_err) = match Self::try_load() {
                 Ok(config) => (config, None),
