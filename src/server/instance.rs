@@ -58,6 +58,14 @@ pub struct RaInstance {
     pub message_writer: mpsc::Sender<Message>,
 }
 
+impl Drop for RaInstance {
+    fn drop(&mut self) {
+        let path = self.project_root.display();
+        let pid = self.pid;
+        log::debug!("[{path} {pid}] instance dropped");
+    }
+}
+
 #[derive(Clone)]
 pub struct InstanceRegistry {
     map: Arc<Mutex<HashMap<PathBuf, Arc<RaInstance>>>>,
@@ -240,6 +248,9 @@ impl RaInstance {
         let mut stdin = stdin;
 
         task::spawn(async move {
+            // because we (stdin task) don't keep a reference to `self` it will be dropped when the
+            // child closes and all the clients disconnect including the sender and this receiver
+            // will not keep blocking (unlike in client input task)
             while let Some(message) = receiver.recv().await {
                 if let Err(err) = message.to_writer(&mut stdin).await {
                     match err.kind() {
@@ -273,12 +284,16 @@ impl RaInstance {
                         }
                     }
                     exit = child.wait() => {
-                        // if the instance wasn't meant to die and still has clients connected,
-                        // those clients will get disconnected when they attempt to send the next
-                        // message. we'll rely on the editor client to restart the client, start a
-                        // new connection and we'll spawn another instance like we'd with any other
-                        // new client
+                        // remove the closing instance from the registry so new clients spawn new
+                        // instance
                         registry.map.lock().await.remove(&project_root);
+
+                        // disconnect all current clients
+                        //
+                        // we'll rely on the editor client to restart the ra-multiplex client,
+                        // start a new connection and we'll spawn another instance like we'd with
+                        // any other new client
+                        let _ = instance.message_readers.write().await.drain();
 
                         match exit {
                             Ok(status) => {
