@@ -71,12 +71,12 @@ pub struct InstanceRegistry {
     map: Arc<Mutex<HashMap<PathBuf, Arc<RaInstance>>>>,
 }
 
-impl Default for InstanceRegistry {
-    fn default() -> Self {
+impl InstanceRegistry {
+    pub async fn new() -> Self {
         let registry = InstanceRegistry {
             map: Arc::default(),
         };
-        registry.spawn_gc_task();
+        registry.spawn_gc_task().await;
         registry
     }
 }
@@ -85,8 +85,8 @@ impl InstanceRegistry {
     /// periodically checks for closed recv channels for every instance
     ///
     /// if an instance has 0 unclosed channels a timeout task is spawned to clean it up
-    fn spawn_gc_task(&self) {
-        let config = Config::load_or_default();
+    async fn spawn_gc_task(&self) {
+        let config = Config::load_or_default().await;
         let gc_interval = config.gc_interval.into();
         let instance_timeout = config.instance_timeout.map(<_>::from);
 

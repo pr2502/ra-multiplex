@@ -7,7 +7,7 @@ use tokio::{io, task};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let config = Config::load_or_default();
+    let config = Config::load_or_default().await;
 
     let stream = TcpStream::connect(config.connect)
         .await

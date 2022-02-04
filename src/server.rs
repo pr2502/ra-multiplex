@@ -22,8 +22,8 @@ mod server {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = Config::load_or_default();
-    let registry = InstanceRegistry::default();
+    let config = Config::load_or_default().await;
+    let registry = InstanceRegistry::new().await;
 
     let listener = TcpListener::bind(config.listen).await.context("listen")?;
     loop {

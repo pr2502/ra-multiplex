@@ -1,10 +1,10 @@
 use anyhow::Context;
 use directories::ProjectDirs;
-use once_cell::sync::OnceCell;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
+use tokio::fs;
+use tokio::sync::OnceCell;
 
 mod default {
     use super::*;
@@ -120,15 +120,16 @@ impl Config {
         }
     }
 
-    fn try_load() -> anyhow::Result<Self> {
+    async fn try_load() -> anyhow::Result<Self> {
         let pkg_name = env!("CARGO_PKG_NAME");
         let config_path = ProjectDirs::from("", "", pkg_name)
             .context("project config directory not found")?
             .config_dir()
             .join("config.toml");
         let path = config_path.display();
-        let config_data =
-            fs::read(&config_path).with_context(|| format!("cannot read config file `{path}`"))?;
+        let config_data = fs::read(&config_path)
+            .await
+            .with_context(|| format!("cannot read config file `{path}`"))?;
         toml::from_slice(&config_data).with_context(|| format!("cannot parse config file `{path}`"))
     }
 
@@ -145,20 +146,22 @@ impl Config {
     /// a configuration with default values
     ///
     /// initializes a global logger based on the configuration
-    pub fn load_or_default() -> &'static Self {
-        static GLOBAL: OnceCell<&'static Config> = OnceCell::new();
-        GLOBAL.get_or_init(|| {
-            let (config, load_err) = match Self::try_load() {
-                Ok(config) => (config, None),
-                Err(err) => (Self::default_values(), Some(err)),
-            };
-            let global_config = Box::leak(Box::new(config));
-            global_config.init_logger();
-            if let Some(load_err) = load_err {
-                // log only after the logger has been initialized
-                log::warn!("cannot load config: {load_err:?}");
-            }
-            global_config
-        })
+    pub async fn load_or_default() -> &'static Self {
+        static GLOBAL: OnceCell<&'static Config> = OnceCell::const_new();
+        GLOBAL
+            .get_or_init(|| async {
+                let (config, load_err) = match Self::try_load().await {
+                    Ok(config) => (config, None),
+                    Err(err) => (Self::default_values(), Some(err)),
+                };
+                let global_config = Box::leak(Box::new(config));
+                global_config.init_logger();
+                if let Some(load_err) = load_err {
+                    // log only after the logger has been initialized
+                    log::warn!("cannot load config: {load_err:?}");
+                }
+                &*global_config
+            })
+            .await
     }
 }
