@@ -31,6 +31,10 @@ mod default {
     pub fn log_filters() -> String {
         "info".to_owned()
     }
+
+    pub fn arg_parsing() -> bool {
+        false
+    }
 }
 
 mod de {
@@ -95,6 +99,9 @@ pub struct Config {
 
     #[serde(default = "default::log_filters")]
     pub log_filters: String,
+
+    #[serde(default = "default::arg_parsing")]
+    pub arg_parsing: bool,
 }
 
 #[cfg(test)]
@@ -117,6 +124,7 @@ impl Config {
             listen: default::listen(),
             connect: default::connect(),
             log_filters: default::log_filters(),
+            arg_parsing: default::arg_parsing(),
         }
     }
 

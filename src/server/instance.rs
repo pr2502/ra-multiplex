@@ -2,6 +2,7 @@ use crate::server::async_once_cell::AsyncOnceCell;
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
 use ra_multiplex::common::config::Config;
+use ra_multiplex::common::proto;
 use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -46,13 +47,77 @@ pub const INIT_REQUEST_ID: &'static str = "ra-multiplex:initialize_request";
 
 pub type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
+/// specifies server configuration, if another server with the same configuration is requested we
+/// can reuse it
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct InstanceKey {
+    server: String,
+    args: Vec<String>,
+    workspace_root: PathBuf,
+}
+
+impl InstanceKey {
+    pub async fn from_proto_init(proto_init: &proto::Init) -> InstanceKey {
+        /// we assume that the top-most directory from the client_cwd containing a file named `Cargo.toml`
+        /// is the project root
+        fn find_cargo_workspace_root(client_cwd: &str) -> Option<PathBuf> {
+            let client_cwd = Path::new(&client_cwd);
+            let mut project_root = None;
+            for ancestor in client_cwd.ancestors() {
+                let cargo_toml = ancestor.join("Cargo.toml");
+                if cargo_toml.exists() {
+                    project_root = Some(ancestor.to_owned());
+                }
+            }
+            project_root
+        }
+
+        /// for non-cargo projects we use a marker file, the first ancestor directory containing a
+        /// marker file `.ra-multiplex-workspace-root` will be considered the workspace root
+        fn find_ra_multiplex_workspace_root(client_cwd: &str) -> Option<PathBuf> {
+            let client_cwd = Path::new(&client_cwd);
+            for ancestor in client_cwd.ancestors() {
+                let marker = ancestor.join(".ra-multiplex-workspace-root");
+                if marker.exists() {
+                    return Some(ancestor.to_owned());
+                }
+            }
+            None
+        }
+
+        // workspace root defaults to the client cwd, this is suboptimal because we may spawn more
+        // server instances than required but should always be correct at least
+        let mut workspace_root = PathBuf::from(&proto_init.cwd);
+
+        // naive detection whether the requested server is likely rust-analyzer
+        if proto_init.server.contains("rust-analyzer") {
+            if let Some(cargo_root) = find_cargo_workspace_root(&proto_init.cwd) {
+                workspace_root = cargo_root;
+            }
+        }
+        // the ra-multiplex marker file overrides even the cargo workspace detection if present
+        if let Some(marked_root) = find_ra_multiplex_workspace_root(&proto_init.cwd) {
+            workspace_root = marked_root;
+        }
+
+        InstanceKey {
+            workspace_root,
+            server: proto_init.server.clone(),
+            args: proto_init.args.clone(),
+        }
+    }
+}
+
 pub struct RaInstance {
     pid: u32,
     /// wakes up the wait_task and asks it to send SIGKILL to the instance
     close: Notify,
     /// make sure only one timeout_task is running for an instance
     timeout_running: AtomicBool,
-    project_root: PathBuf,
+    key: InstanceKey,
+    // server: String,
+    // args: Vec<String>,
+    // workspace_root: PathBuf,
     pub init_cache: InitializeCache,
     pub message_readers: MessageReaders,
     pub message_writer: mpsc::Sender<Message>,
@@ -60,7 +125,7 @@ pub struct RaInstance {
 
 impl Drop for RaInstance {
     fn drop(&mut self) {
-        let path = self.project_root.display();
+        let path = self.key.workspace_root.display();
         let pid = self.pid;
         log::debug!("[{path} {pid}] instance dropped");
     }
@@ -68,7 +133,7 @@ impl Drop for RaInstance {
 
 #[derive(Clone)]
 pub struct InstanceRegistry {
-    map: Arc<Mutex<HashMap<PathBuf, Arc<RaInstance>>>>,
+    map: Arc<Mutex<HashMap<InstanceKey, Arc<RaInstance>>>>,
 }
 
 impl InstanceRegistry {
@@ -96,7 +161,7 @@ impl InstanceRegistry {
             loop {
                 time::sleep(Duration::from_secs(gc_interval)).await;
 
-                for (path, instance) in registry.map.lock().await.iter() {
+                for (key, instance) in registry.map.lock().await.iter() {
                     for (port, sender) in instance.message_readers.read().await.iter() {
                         if sender.is_closed() {
                             closed_ports.push(*port);
@@ -110,9 +175,9 @@ impl InstanceRegistry {
                         if message_readers.is_empty() {
                             if !instance.timeout_running.swap(true, Ordering::SeqCst) {
                                 // only spawn the timeout task if one is not already running
-                                registry.spawn_timeout_task(path, instance_timeout);
+                                registry.spawn_timeout_task(key, instance_timeout);
                                 let pid = instance.pid;
-                                let path = path.display();
+                                let path = key.workspace_root.display();
                                 log::warn!("[{path} {pid}] no clients, close timeout started ({instance_timeout} seconds)");
                             }
                         }
@@ -125,13 +190,13 @@ impl InstanceRegistry {
     }
 
     /// closes a rust-analyzer instance after a timeout if it still doesn't have any
-    fn spawn_timeout_task(&self, path: &Path, instance_timeout: u64) {
+    fn spawn_timeout_task(&self, key: &InstanceKey, instance_timeout: u64) {
         let registry = self.clone();
-        let path = path.to_owned();
+        let key = key.to_owned();
         task::spawn(async move {
             time::sleep(Duration::from_secs(instance_timeout)).await;
 
-            if let Some(instance) = registry.map.lock().await.get(&path) {
+            if let Some(instance) = registry.map.lock().await.get(&key) {
                 if instance.message_readers.read().await.is_empty() {
                     instance.close.notify_one();
                 }
@@ -144,13 +209,12 @@ impl InstanceRegistry {
     }
 
     /// find or spawn an instance for a `project_root`
-    pub async fn get(&self, project_root: &Path) -> Result<Arc<RaInstance>> {
+    pub async fn get(&self, key: &InstanceKey) -> Result<Arc<RaInstance>> {
         let mut map = self.map.lock().await;
-        match map.entry(project_root.to_owned()) {
+        match map.entry(key.to_owned()) {
             Entry::Occupied(e) => Ok(Arc::clone(e.get())),
             Entry::Vacant(e) => {
-                let new =
-                    RaInstance::spawn(project_root, self.clone()).context("spawn ra instance")?;
+                let new = RaInstance::spawn(key, self.clone()).context("spawn ra instance")?;
                 e.insert(Arc::clone(&new));
                 Ok(new)
             }
@@ -159,9 +223,10 @@ impl InstanceRegistry {
 }
 
 impl RaInstance {
-    fn spawn(project_root: &Path, registry: InstanceRegistry) -> Result<Arc<RaInstance>> {
-        let mut child = Command::new("rust-analyzer")
-            .current_dir(project_root)
+    fn spawn(key: &InstanceKey, registry: InstanceRegistry) -> Result<Arc<RaInstance>> {
+        let mut child = Command::new(&key.server)
+            .args(&key.args)
+            .current_dir(&key.workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -178,7 +243,10 @@ impl RaInstance {
             pid,
             close: Notify::new(),
             timeout_running: AtomicBool::new(false),
-            project_root: project_root.to_owned(),
+            key: key.to_owned(),
+            // server: key.server.to_owned(),
+            // args: key.args.to_owned(),
+            // workspace_root: key.workspace_root.to_owned(),
             init_cache: InitializeCache::default(),
             message_readers: MessageReaders::default(),
             message_writer,
@@ -189,8 +257,8 @@ impl RaInstance {
         instance.spawn_stdout_task(stdout);
         instance.spawn_stdin_task(rx, stdin);
 
-        let path = project_root.display();
-        log::info!("[{path} {pid}] spawned rust-analyzer");
+        let path = key.workspace_root.display();
+        log::info!("[{path} {pid}] spawned {server}", server=&key.server);
 
         Ok(instance)
     }
@@ -198,7 +266,7 @@ impl RaInstance {
     /// read errors from server stderr and log them
     fn spawn_stderr_task(self: &Arc<Self>, stderr: ChildStderr) {
         let pid = self.pid;
-        let path = self.project_root.display().to_string();
+        let path = self.key.workspace_root.display().to_string();
         let mut stderr = BufReader::new(stderr);
         let mut buffer = String::new();
 
@@ -229,7 +297,7 @@ impl RaInstance {
         let stdout = BufReader::new(stdout);
         let instance = Arc::clone(self);
         let pid = self.pid;
-        let path = instance.project_root.display().to_string();
+        let path = instance.key.workspace_root.display().to_string();
 
         task::spawn(async move {
             match read_server_socket(stdout, &instance.message_readers, &instance.init_cache).await
@@ -243,7 +311,7 @@ impl RaInstance {
     /// read messages sent by clients from a channel and write them into server stdin
     fn spawn_stdin_task(self: &Arc<Self>, rx: mpsc::Receiver<Message>, stdin: ChildStdin) {
         let pid = self.pid;
-        let path = self.project_root.display().to_string();
+        let path = self.key.workspace_root.display().to_string();
         let mut receiver = rx;
         let mut stdin = stdin;
 
@@ -270,9 +338,9 @@ impl RaInstance {
 
     /// waits for child and logs when it exits
     fn spawn_wait_task(self: &Arc<Self>, child: Child, registry: InstanceRegistry) {
-        let project_root = self.project_root.clone();
+        let key = self.key.clone();
         let pid = self.pid;
-        let path = project_root.display().to_string();
+        let path = key.workspace_root.display().to_string();
         let instance = Arc::clone(self);
         task::spawn(async move {
             let mut child = child;
@@ -286,7 +354,7 @@ impl RaInstance {
                     exit = child.wait() => {
                         // remove the closing instance from the registry so new clients spawn new
                         // instance
-                        registry.map.lock().await.remove(&project_root);
+                        registry.map.lock().await.remove(&key);
 
                         // disconnect all current clients
                         //

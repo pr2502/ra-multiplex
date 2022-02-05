@@ -17,7 +17,10 @@ The second binary `ra-multiplex-server` will listen on `:27631` and spawn the
 `rust-analyzer` server, depending on the working directory the `ra-multiplex`
 client was spawned from it can reuse an already spawned `rust-analyzer`
 instance. It detects workspace root as the furthermost ancestor directory
-containing a `Cargo.toml` file.
+containing a `Cargo.toml` file. If the automatic workspace detection fails or
+if you're not using `rust-analyzer` as a server you can create a marker file
+`.ra-multiplex-workspace-root` in the directory you want to use as a workspace
+root, the first ancestor directory containing this file will be used.
 
 Because neither LSP nor `rust-analyzer` itself support multiple clients per
 server `ra-multiplex-server` caches the handshake messages and modifies IDs of
@@ -51,7 +54,7 @@ CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
 
 ```json
 {
-    "rust-analyzer.serverPath": "/path/to/ra-multiplex",
+    "rust-analyzer.serverPath": "/path/to/ra-multiplex"
 }
 ```
 
@@ -110,4 +113,50 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # is documented in the `env_logger` documentation here:
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
+
+# whether `ra-multiplex` client should process any arguments
+#
+# by default this is set to `false`, in this case `ra-multiplex` can be used as
+# a drop-in replacement for `rust-analyzer` but no other server. for more
+# information see the "Other LSP servers" section of the README.
+arg_parsing = false
+```
+
+
+## Other LSP servers
+
+Using other servers requires a bit more setup. First enable the `arg_parse`
+option in `~/.config/ra-multiplex/config.toml`:
+
+```toml
+arg_parsing = true
+```
+
+Then for each server you want to use (including `rust-analyzer`) create a
+wrapper script that passes the right arguments like in the following example.
+We're using the standard cargo install directories so update the examples for
+your needs.
+
+Wrapper script `rust-analyzer-proxy`:
+
+```sh
+#!/bin/sh
+exec ~/.cargo/bin/ra-multiplex --server ~/.cargo/bin/rust-analyzer -- $@
+```
+
+Wrapper script `clangd-proxy`:
+
+```sh
+#!/bin/sh
+exec ~/.cargo/bin/ra-multiplex --server /usr/bin/clangd -- --log=error $@
+```
+
+Configure LSP client to use the wrapper script, for CoC
+`~/.config/nvim/coc-settings.json`:
+
+```json
+{
+    "rust-analyzer.serverPath": "/home/user/.cargo/bin/rust-analyzer-proxy",
+    "clangd.path": "/home/user/.cargo/bin/clangd-proxy"
+}
 ```

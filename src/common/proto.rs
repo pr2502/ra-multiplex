@@ -5,14 +5,15 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 #[derive(Serialize, Deserialize)]
 pub struct Init {
-    pub proto: String,
-    pub version: String,
+    proto: String,
+    version: String,
     pub cwd: String,
+    pub server: String,
     pub args: Vec<String>,
 }
 
 impl Init {
-    pub fn from_env() -> Init {
+    pub fn new(server: String, args: Vec<String>) -> Init {
         Init {
             proto: env!("CARGO_PKG_NAME").to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -21,7 +22,8 @@ impl Init {
                 .to_str()
                 .expect("current directory path is not valid UTF-8")
                 .to_owned(),
-            args: env::args().skip(1).collect(),
+            server,
+            args,
         }
     }
 
@@ -38,10 +40,6 @@ impl Init {
 
         let proto_init: Self = serde_json::from_slice(buffer).context("invalid proto init")?;
         ensure!(proto_init.check_version(), "invalid protocol version");
-        ensure!(
-            proto_init.args.is_empty(),
-            "unexpected args passed to client"
-        );
 
         Ok(proto_init)
     }

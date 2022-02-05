@@ -1,6 +1,6 @@
 [package]
 name = "ra-multiplex"
-version = "0.1.6"
+version = "0.1.7"
 description = "share one rust-analyzer server instance between multiple LSP clients to save resources"
 repository = "https://github.com/pr2502/ra-multiplex"
 license = "MIT"
@@ -17,6 +17,7 @@ path = "src/server.rs"
 
 [dependencies]
 anyhow = "1.0.53"
+clap = { version = "3.0.14", features = ["derive"] }
 directories = "4.0.1"
 env_logger = "0.9.0"
 log = "0.4.14"

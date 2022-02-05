@@ -1,11 +1,11 @@
-use crate::server::instance::{InitializeCache, InstanceRegistry, RaInstance, INIT_REQUEST_ID};
+use crate::server::instance::{
+    InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
+};
 use crate::server::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
 use ra_multiplex::common::proto;
 use serde_json::{Map, Value};
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
-use std::str;
 use std::sync::Arc;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -28,13 +28,13 @@ impl Client {
         let mut buffer = Vec::new();
         let proto_init = proto::Init::from_reader(&mut buffer, &mut socket_read).await?;
 
-        let project_root = find_project_root(&proto_init.cwd)
-            .with_context(|| format!("couldn't find project root for {}", &proto_init.cwd))?;
+        let key = InstanceKey::from_proto_init(&proto_init).await;
+        log::debug!("client configured {key:?}");
 
         let mut client = Client {
             port,
             initialize_request_id: None,
-            instance: registry.get(&project_root).await?,
+            instance: registry.get(&key).await?,
         };
 
         client.wait_for_initialize_request(&mut socket_read).await?;
@@ -180,20 +180,6 @@ fn tag_id(port: u16, id: &Value) -> Result<String> {
         Value::String(string) => Ok(format!("{port:04x}:s:{string}")),
         _ => bail!("unexpected message id type {id:?}"),
     }
-}
-
-/// we assume that the top-most directory from the client_cwd containing a file named `Cargo.toml`
-/// is the project root
-fn find_project_root(client_cwd: &str) -> Option<PathBuf> {
-    let client_cwd = Path::new(&client_cwd);
-    let mut project_root = None;
-    for ancestor in client_cwd.ancestors() {
-        let cargo_toml = ancestor.join("Cargo.toml");
-        if cargo_toml.exists() {
-            project_root = Some(ancestor.to_owned());
-        }
-    }
-    project_root
 }
 
 /// reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
