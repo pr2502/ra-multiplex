@@ -1,9 +1,9 @@
-use crate::server::instance::{
+use crate::instance::{
     InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
 };
-use crate::server::lsp::{self, Message};
+use crate::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
-use ra_multiplex::common::proto;
+use ra_multiplex::proto;
 use serde_json::{Map, Value};
 use std::io::ErrorKind;
 use std::sync::Arc;

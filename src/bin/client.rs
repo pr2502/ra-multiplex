@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use ra_multiplex::common::config::Config;
-use ra_multiplex::common::proto;
+use ra_multiplex::config::Config;
+use ra_multiplex::proto;
 use std::env;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;

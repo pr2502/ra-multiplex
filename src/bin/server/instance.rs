@@ -1,8 +1,8 @@
-use crate::server::async_once_cell::AsyncOnceCell;
-use crate::server::lsp::{self, Message};
+use crate::async_once_cell::AsyncOnceCell;
+use crate::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
-use ra_multiplex::common::config::Config;
-use ra_multiplex::common::proto;
+use ra_multiplex::config::Config;
+use ra_multiplex::proto;
 use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -115,9 +115,6 @@ pub struct RaInstance {
     /// make sure only one timeout_task is running for an instance
     timeout_running: AtomicBool,
     key: InstanceKey,
-    // server: String,
-    // args: Vec<String>,
-    // workspace_root: PathBuf,
     pub init_cache: InitializeCache,
     pub message_readers: MessageReaders,
     pub message_writer: mpsc::Sender<Message>,
@@ -258,7 +255,7 @@ impl RaInstance {
         instance.spawn_stdin_task(rx, stdin);
 
         let path = key.workspace_root.display();
-        log::info!("[{path} {pid}] spawned {server}", server=&key.server);
+        log::info!("[{path} {pid}] spawned {server}", server = &key.server);
 
         Ok(instance)
     }

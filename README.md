@@ -125,7 +125,7 @@ arg_parsing = false
 
 ## Other LSP servers
 
-Using other servers requires a bit more setup. First enable the `arg_parse`
+Using other servers requires a bit more setup. First enable the `arg_parsing`
 option in `~/.config/ra-multiplex/config.toml`:
 
 ```toml

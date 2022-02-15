@@ -9,11 +9,11 @@ autobins = false
 
 [[bin]]
 name = "ra-multiplex"
-path = "src/client.rs"
+path = "src/bin/client.rs"
 
 [[bin]]
 name = "ra-multiplex-server"
-path = "src/server.rs"
+path = "src/bin/server/main.rs"
 
 [dependencies]
 anyhow = "1.0.53"

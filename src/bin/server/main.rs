@@ -6,19 +6,17 @@
 //! LSP Multiplexer attempts to solve this problem by spawning a single rust-analyzer instance per
 //! cargo workspace and routing the messages through TCP to multiple clients.
 
-use crate::server::client::Client;
-use crate::server::instance::InstanceRegistry;
+use crate::client::Client;
+use crate::instance::InstanceRegistry;
 use anyhow::{Context, Result};
-use ra_multiplex::common::config::Config;
+use ra_multiplex::config::Config;
 use tokio::net::TcpListener;
 use tokio::task;
 
-mod server {
-    pub mod async_once_cell;
-    pub mod client;
-    pub mod instance;
-    pub mod lsp;
-}
+mod async_once_cell;
+mod client;
+mod instance;
+mod lsp;
 
 #[tokio::main]
 async fn main() -> Result<()> {
