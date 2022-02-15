@@ -8,6 +8,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::io::ErrorKind;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -371,8 +372,11 @@ impl RaInstance {
                                 if let Some(code) = status.code() {
                                     details.write_fmt(format_args!(" code {code}")).unwrap();
                                 }
-                                if let Some(signal) = status.signal() {
-                                    details.write_fmt(format_args!(" signal {signal}")).unwrap();
+                                #[cfg(unix)]
+                                {
+                                    if let Some(signal) = status.signal() {
+                                        details.write_fmt(format_args!(" signal {signal}")).unwrap();
+                                    }
                                 }
                                 let pid = instance.pid;
                                 log::error!("[{path} {pid}] child exited {success}{details}");
