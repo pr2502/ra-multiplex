@@ -44,7 +44,7 @@ impl InitializeCache {
 }
 
 /// dummy id used for the InitializeRequest and expected in the response
-pub const INIT_REQUEST_ID: &'static str = "ra-multiplex:initialize_request";
+pub const INIT_REQUEST_ID: &str = "ra-multiplex:initialize_request";
 
 pub type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
@@ -121,6 +121,19 @@ pub struct RaInstance {
     pub message_writer: mpsc::Sender<Message>,
 }
 
+impl RaInstance {
+    /// returns true if this is the first thread attempting to start a timeout task
+    fn attempt_start_timeout(&self) -> bool {
+        let already_running = self.timeout_running.swap(true, Ordering::SeqCst);
+        !already_running
+    }
+
+    /// lets another timeout task start
+    fn timeout_finished(&self) {
+        self.timeout_running.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Drop for RaInstance {
     fn drop(&mut self) {
         let path = self.key.workspace_root.display();
@@ -170,14 +183,11 @@ impl InstanceRegistry {
                         message_readers.remove(&port);
                     }
                     if let Some(instance_timeout) = instance_timeout {
-                        if message_readers.is_empty() {
-                            if !instance.timeout_running.swap(true, Ordering::SeqCst) {
-                                // only spawn the timeout task if one is not already running
-                                registry.spawn_timeout_task(key, instance_timeout);
-                                let pid = instance.pid;
-                                let path = key.workspace_root.display();
-                                log::warn!("[{path} {pid}] no clients, close timeout started ({instance_timeout} seconds)");
-                            }
+                        if message_readers.is_empty() && instance.attempt_start_timeout() {
+                            registry.spawn_timeout_task(key, instance_timeout);
+                            let pid = instance.pid;
+                            let path = key.workspace_root.display();
+                            log::warn!("[{path} {pid}] no clients, close timeout started ({instance_timeout} seconds)");
                         }
                     } else {
                         // if there is no instance timeout we don't need to spawn the timeout task
@@ -198,8 +208,7 @@ impl InstanceRegistry {
                 if instance.message_readers.read().await.is_empty() {
                     instance.close.notify_one();
                 }
-                // let anoter timeout task spawn
-                instance.timeout_running.store(false, Ordering::SeqCst);
+                instance.timeout_finished();
             } else {
                 // instance has already been deleted
             }
@@ -242,9 +251,6 @@ impl RaInstance {
             close: Notify::new(),
             timeout_running: AtomicBool::new(false),
             key: key.to_owned(),
-            // server: key.server.to_owned(),
-            // args: key.args.to_owned(),
-            // workspace_root: key.workspace_root.to_owned(),
             init_cache: InitializeCache::default(),
             message_readers: MessageReaders::default(),
             message_writer,

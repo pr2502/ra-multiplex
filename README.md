@@ -113,50 +113,52 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # is documented in the `env_logger` documentation here:
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
-
-# whether `ra-multiplex` client should process any arguments
-#
-# by default this is set to `false`, in this case `ra-multiplex` can be used as
-# a drop-in replacement for `rust-analyzer` but no other server. for more
-# information see the "Other LSP servers" section of the README.
-arg_parsing = false
 ```
 
 
 ## Other LSP servers
 
-Using other servers requires a bit more setup. First enable the `arg_parsing`
-option in `~/.config/ra-multiplex/config.toml`:
+By default `ra-multplex` uses a `rust-analyzer` binary found in its `$PATH` as
+the server. This can be overriden using the `--ra-mux-server` cli option or
+`RA_MUX_SERVER` environment variable. You can usually configure one of these in
+your editor configuration. If both are specified the cli option overrides the
+environment variable.
 
-```toml
-arg_parsing = true
-```
-
-Then for each server you want to use (including `rust-analyzer`) create a
-wrapper script that passes the right arguments like in the following example.
-We're using the standard cargo install directories so update the examples for
-your needs.
-
-Wrapper script `rust-analyzer-proxy`:
-
-```sh
-#!/bin/sh
-exec ~/.cargo/bin/ra-multiplex --server ~/.cargo/bin/rust-analyzer -- $@
-```
-
-Wrapper script `clangd-proxy`:
-
-```sh
-#!/bin/sh
-exec ~/.cargo/bin/ra-multiplex --server /usr/bin/clangd -- --log=error $@
-```
-
-Configure LSP client to use the wrapper script, for CoC
+For example with `coc-clangd` in CoC for neovim add to
 `~/.config/nvim/coc-settings.json`:
 
 ```json
 {
-    "rust-analyzer.serverPath": "/home/user/.cargo/bin/rust-analyzer-proxy",
-    "clangd.path": "/home/user/.cargo/bin/clangd-proxy"
+    "clangd.path": "/home/user/.cargo/bin/ra-multiplex",
+    "clangd.arguments": ["--ra-mux-server", "/usr/bin/clangd"]
+}
+```
+
+Or to set a custom path for `rust-analyzer` with `coc-rust-analyzer` add to
+`~/.config/nvim/coc-settings.json`:
+
+```json
+{
+    "rust-analyzer.server.path": "/home/user/.cargo/bin/ra-multiplex",
+    "rust-analyzer.server.extraEnv": { "RA_MUX_SERVER": "/custom/path/rust-analyzer" }
+}
+```
+
+If your editor configuration or plugin doesn't allow to add either you can
+instead create a wrapper shell script and set it as the server path directly.
+For example if `coc-clangd` didn't allow to pass additional arguments you'd
+need a script like `/usr/local/bin/clangd-proxy`:
+
+```sh
+#!/bin/sh
+RA_MUX_SERVER=/usr/bin/clangd exec /home/user/.cargo/bin/ra-multiplex $@
+```
+
+And configure the editor to use the wrapper script in
+`~/.config/nvim/coc-settings.json`:
+
+```json
+{
+    "clangd.path": "/usr/local/bin/clangd-proxy"
 }
 ```

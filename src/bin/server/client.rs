@@ -204,9 +204,9 @@ async fn read_client_socket(
             }
         }
         if matches!(json.get("method"), Some(Value::String(method)) if method == "shutdown") {
-            // client requested the server to shut down but other clients might still be connected
+            // client requested the server to shut down but other clients might still be connected.
             // instead we disconnect this client to prevent the editor hanging
-            // see https://github.com/pr2502/ra-multiplex/issues/5
+            // see <https://github.com/pr2502/ra-multiplex/issues/5>
             log::debug!("[{port}] client sent shutdown request, closing connection");
             break;
         }

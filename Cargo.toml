@@ -17,7 +17,6 @@ path = "src/bin/server/main.rs"
 
 [dependencies]
 anyhow = "1.0.53"
-clap = { version = "3.0.14", features = ["derive"] }
 directories = "4.0.1"
 env_logger = "0.9.0"
 log = "0.4.14"
