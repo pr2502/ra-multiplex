@@ -8,8 +8,9 @@
 
 use crate::client::Client;
 use crate::instance::InstanceRegistry;
-use anyhow::{Context, Result};
+use anyhow::{Context, bail, Result};
 use ra_multiplex::config::Config;
+use std::env;
 use tokio::net::TcpListener;
 use tokio::task;
 
@@ -22,6 +23,10 @@ mod lsp;
 async fn main() -> Result<()> {
     let config = Config::load_or_default().await;
     let registry = InstanceRegistry::new().await;
+
+    if env::args().nth(1).is_some() {
+        bail!("`ra-multiplex-server` does not accept any arguments. To configure it, edit config.toml or pass arguments to the `ra-multiplex` client");
+    }
 
     let listener = TcpListener::bind(config.listen).await.context("listen")?;
     loop {
