@@ -238,7 +238,14 @@ impl RaInstance {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("couldn't spawn rust-analyzer")?;
+            .with_context(|| {
+                format!(
+                    "couldn't spawn rust-analyzer with command: `{}{}{}`",
+                    &key.server,
+                    if key.args.is_empty() { "" } else { " " },
+                    key.args.join(" ")
+                )
+            })?;
 
         let pid = child.id().context("child exited early, couldn't get PID")?;
         let stderr = child.stderr.take().unwrap();
