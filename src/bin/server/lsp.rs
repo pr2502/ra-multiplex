@@ -161,7 +161,7 @@ impl Message {
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        &*self.bytes
+        &self.bytes
     }
 
     /// construct a message from a serializable value, like JSON
@@ -179,7 +179,7 @@ impl Message {
         writer
             .write_all(format!("Content-Length: {}\r\n\r\n", self.bytes.len()).as_bytes())
             .await?;
-        writer.write_all(&*self.bytes).await?;
+        writer.write_all(&self.bytes).await?;
         writer.flush().await
     }
 }
