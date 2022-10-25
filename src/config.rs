@@ -158,7 +158,7 @@ impl Config {
                 global_config.init_logger();
                 if let Some(load_err) = load_err {
                     // log only after the logger has been initialized
-                    log::warn!("cannot load config: {load_err:?}");
+                    log::info!("cannot load config, continuing with defaults: {load_err:?}");
                 }
                 &*global_config
             })
