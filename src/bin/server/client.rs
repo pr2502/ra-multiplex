@@ -10,8 +10,13 @@ use std::sync::Arc;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
 use tokio::{select, task};
+
+enum Response {
+    Message(Option<Message>),
+    Shutdown(Option<Option<String>>),
+}
 
 pub struct Client {
     port: u16,
@@ -40,9 +45,9 @@ impl Client {
         client.wait_for_initialize_request(&mut socket_read).await?;
 
         let (client_tx, client_rx) = client.register_client_with_instance().await;
-        let client_close = Arc::new(Notify::new());
-        client.spawn_input_task(client_rx, socket_write, Arc::clone(&client_close));
-        client.spawn_output_task(socket_read, client_close);
+        let (close_tx, close_rx) = mpsc::channel(1);
+        client.spawn_input_task(client_rx, socket_write, close_rx);
+        client.spawn_output_task(socket_read, close_tx);
 
         client
             .wait_for_initialize_response(client_tx, &mut buffer)
@@ -127,7 +132,7 @@ impl Client {
         &self,
         mut rx: mpsc::Receiver<Message>,
         mut socket_write: OwnedWriteHalf,
-        close: Arc<Notify>,
+        mut close: mpsc::Receiver<Option<String>>,
     ) {
         let port = self.port;
         task::spawn(async move {
@@ -139,18 +144,32 @@ impl Client {
             //
             // to solve this we use a notification from the output task which closes as soon as the
             // tcp connection from client is closed.
-            while let Some(message) = select! {
-                _ignore = close.notified() => None,
-                message = rx.recv() => message,
-            } {
-                if let Err(err) = message.to_writer(&mut socket_write).await {
-                    match err.kind() {
-                        // ignore benign errors, treat as socket close
-                        ErrorKind::BrokenPipe => {}
-                        // report fatal errors
-                        _ => log::error!("[{port}] error writing client input: {err}"),
+            loop {
+                match select! {
+                    last_id = close.recv() => Response::Shutdown(last_id),
+                    message = rx.recv() => Response::Message(message),
+                } {
+                    Response::Message(Some(message)) => {
+                        if let Err(err) = message.to_writer(&mut socket_write).await {
+                            match err.kind() {
+                                // ignore benign errors, treat as socket close
+                                ErrorKind::BrokenPipe => {}
+                                // report fatal errors
+                                _ => log::error!("[{port}] error writing client input: {err}"),
+                            }
+                            break;
+                        }
                     }
-                    break; // break on any error
+                    Response::Shutdown(Some(Some(last_id))) => {
+                        let dat = format!(r#"{{"id":{last_id},"jsonrpc":"2.0","result":null}}"#);
+                        let rsp = format!("Content-Length: {}\r\n\r\n{}", dat.len(), dat);
+                        socket_write
+                            .try_write(rsp.as_bytes())
+                            .map(|_| ())
+                            .unwrap_or(());
+                        break;
+                    }
+                    _ => break,
                 }
             }
             log::debug!("[{port}] client input closed");
@@ -158,19 +177,31 @@ impl Client {
         });
     }
 
-    fn spawn_output_task(&self, socket_read: BufReader<OwnedReadHalf>, close: Arc<Notify>) {
+    fn spawn_output_task(
+        &self,
+        socket_read: BufReader<OwnedReadHalf>,
+        close: mpsc::Sender<Option<String>>,
+    ) {
         let port = self.port;
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
         task::spawn(async move {
             match read_client_socket(socket_read, instance_tx, port, &instance.init_cache).await {
-                Ok(_) => {
+                Ok(last_id) => {
                     log::debug!("[{port}] client output closed");
-                    close.notify_one(); // close the input channel as well
+                    close.send(last_id).await.unwrap_or(()); // close the input channel as well
                 }
                 Err(err) => log::error!("[{port}] error reading client output: {err:?}"),
             }
         });
+    }
+}
+
+fn raw_id(id: Option<&Value>) -> Option<String> {
+    match id {
+        Some(Value::Number(number)) => Some(number.to_string()),
+        Some(Value::String(string)) => Some(string.into()),
+        _ => None,
     }
 }
 
@@ -189,7 +220,7 @@ async fn read_client_socket(
     sender: mpsc::Sender<Message>,
     port: u16,
     init_cache: &InitializeCache,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
@@ -208,7 +239,7 @@ async fn read_client_socket(
             // instead we disconnect this client to prevent the editor hanging
             // see <https://github.com/pr2502/ra-multiplex/issues/5>
             log::debug!("[{port}] client sent shutdown request, closing connection");
-            break;
+            return Ok(raw_id(json.get("id")));
         }
         if let Some(id) = json.get("id") {
             // messages containing an id need the id modified so we can discern which client to send
@@ -229,5 +260,5 @@ async fn read_client_socket(
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
