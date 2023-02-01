@@ -4,13 +4,13 @@ use crate::instance::{
 use crate::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
 use ra_multiplex::proto;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::io::ErrorKind;
 use std::sync::Arc;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
 use tokio::{select, task};
 
 pub struct Client {
@@ -40,9 +40,9 @@ impl Client {
         client.wait_for_initialize_request(&mut socket_read).await?;
 
         let (client_tx, client_rx) = client.register_client_with_instance().await;
-        let client_close = Arc::new(Notify::new());
-        client.spawn_input_task(client_rx, socket_write, Arc::clone(&client_close));
-        client.spawn_output_task(socket_read, client_close);
+        let (close_tx, close_rx) = mpsc::channel(1);
+        client.spawn_input_task(client_rx, close_rx, socket_write);
+        client.spawn_output_task(socket_read, close_tx);
 
         client
             .wait_for_initialize_response(client_tx, &mut buffer)
@@ -126,8 +126,8 @@ impl Client {
     fn spawn_input_task(
         &self,
         mut rx: mpsc::Receiver<Message>,
+        mut close_rx: mpsc::Receiver<Message>,
         mut socket_write: OwnedWriteHalf,
-        close: Arc<Notify>,
     ) {
         let port = self.port;
         task::spawn(async move {
@@ -137,10 +137,12 @@ impl Client {
             // last client often falsely hanging while the gc task depends on the input channels being
             // closed to detect a disconnected client.
             //
-            // to solve this we use a notification from the output task which closes as soon as the
-            // tcp connection from client is closed.
+            // when a client sends a shutdown request we receive a message on the close_rx, send
+            // the reply and close the connection. if no shutdown request was received but the
+            // client closed close_rx channel will be dropped (unlike the normal rx channel which
+            // is shared) and the connection will close without sending any response.
             while let Some(message) = select! {
-                _ignore = close.notified() => None,
+                message = close_rx.recv() => message,
                 message = rx.recv() => message,
             } {
                 if let Err(err) = message.to_writer(&mut socket_write).await {
@@ -158,16 +160,25 @@ impl Client {
         });
     }
 
-    fn spawn_output_task(&self, socket_read: BufReader<OwnedReadHalf>, close: Arc<Notify>) {
+    fn spawn_output_task(
+        &self,
+        socket_read: BufReader<OwnedReadHalf>,
+        close_tx: mpsc::Sender<Message>,
+    ) {
         let port = self.port;
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
         task::spawn(async move {
-            match read_client_socket(socket_read, instance_tx, port, &instance.init_cache).await {
-                Ok(_) => {
-                    log::debug!("[{port}] client output closed");
-                    close.notify_one(); // close the input channel as well
-                }
+            match read_client_socket(
+                socket_read,
+                instance_tx,
+                close_tx,
+                port,
+                &instance.init_cache,
+            )
+            .await
+            {
+                Ok(_) => log::debug!("[{port}] client output closed"),
                 Err(err) => log::error!("[{port}] error reading client output: {err:?}"),
             }
         });
@@ -185,14 +196,15 @@ fn tag_id(port: u16, id: &Value) -> Result<String> {
 /// reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
 /// to the writer
 async fn read_client_socket(
-    mut reader: BufReader<OwnedReadHalf>,
-    sender: mpsc::Sender<Message>,
+    mut socket_read: BufReader<OwnedReadHalf>,
+    tx: mpsc::Sender<Message>,
+    close_tx: mpsc::Sender<Message>,
     port: u16,
     init_cache: &InitializeCache,
 ) -> Result<()> {
     let mut buffer = Vec::new();
 
-    while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
+    while let Some((mut json, bytes)) = lsp::read_message(&mut socket_read, &mut buffer).await? {
         if matches!(json.get("method"), Some(Value::String(method)) if method == "initialized") {
             // initialized notification can only be sent once per server
             if init_cache.attempt_send_notif() {
@@ -207,7 +219,20 @@ async fn read_client_socket(
             // client requested the server to shut down but other clients might still be connected.
             // instead we disconnect this client to prevent the editor hanging
             // see <https://github.com/pr2502/ra-multiplex/issues/5>
-            log::debug!("[{port}] client sent shutdown request, closing connection");
+            if let Some(shutdown_request_id) = json.get("id") {
+                log::info!("[{port}] client sent shutdown request, sending a response and closing connection");
+                // <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#shutdown>
+                let message = Message::from_json(
+                    &json!({
+                        "id": shutdown_request_id,
+                        "jsonrpc": "2.0",
+                        "result": null,
+                    }),
+                    &mut buffer,
+                );
+                // ignoring error because we would've closed the connection regardless
+                let _ = close_tx.send(message).await;
+            }
             break;
         }
         if let Some(id) = json.get("id") {
@@ -217,14 +242,14 @@ async fn read_client_socket(
             json.insert("id".to_owned(), Value::String(tagged_id));
 
             let message = Message::from_json(&json, &mut buffer);
-            if sender.send(message).await.is_err() {
+            if tx.send(message).await.is_err() {
                 break;
             }
         } else {
             // notification messages without an id don't need any modification and can be forwarded
             // to rust-analyzer as is
             let message = Message::from_bytes(bytes);
-            if sender.send(message).await.is_err() {
+            if tx.send(message).await.is_err() {
                 break;
             }
         }
