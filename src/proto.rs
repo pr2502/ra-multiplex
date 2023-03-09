@@ -38,8 +38,12 @@ impl Init {
             .context("read proto init")?;
         buffer.pop(); // remove trailing '\0'
 
-        let proto_init: Self = serde_json::from_slice(buffer).context("invalid proto init")?;
-        ensure!(proto_init.check_version(), "invalid protocol version");
+        let proto_init: Self =
+            serde_json::from_slice(buffer).context("invalid ra-multiplex proto init")?;
+        ensure!(
+            proto_init.check_version(),
+            "ra-multiplex client protocol different version from the server"
+        );
 
         Ok(proto_init)
     }
