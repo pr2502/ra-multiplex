@@ -42,7 +42,7 @@ impl Init {
             serde_json::from_slice(buffer).context("invalid ra-multiplex proto init")?;
         ensure!(
             proto_init.check_version(),
-            "ra-multiplex client protocol different version from the server"
+            "ra-multiplex client protocol version differs from server version"
         );
 
         Ok(proto_init)
