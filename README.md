@@ -49,6 +49,8 @@ $ which rust-analyzer
 $ target/release/ra-multiplex-server
 ```
 
+`ra-multiplex-server` can run as a systemd user service, see the example `ra-mux.service`.
+
 Configure your editor to use `ra-multiplex` as `rust-analyzer`, for example for
 CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
 
