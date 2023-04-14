@@ -7,16 +7,21 @@ license = "MIT"
 edition = "2021"
 autobins = false
 
-[[bin]]
-name = "ra-multiplex"
-path = "src/bin/client.rs"
+# [[bin]]
+# name = "ra-multiplex"
+# path = "src/bin/client.rs"
+
+# [[bin]]
+# name = "ra-multiplex-server"
+# path = "src/bin/server/main.rs"
 
 [[bin]]
-name = "ra-multiplex-server"
-path = "src/bin/server/main.rs"
+name = "ra-mux"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.53"
+clap = { version = "4.2.2", features = ["derive", "env"] }
 directories = "4.0.1"
 env_logger = "0.9.0"
 log = "0.4.14"
