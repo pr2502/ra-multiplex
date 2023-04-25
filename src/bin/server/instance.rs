@@ -59,6 +59,8 @@ pub struct InstanceKey {
 
 impl InstanceKey {
     pub async fn from_proto_init(proto_init: &proto::Init) -> InstanceKey {
+        let config = Config::load_or_default().await;
+
         /// we assume that the top-most directory from the client_cwd containing a file named `Cargo.toml`
         /// is the project root
         fn find_cargo_workspace_root(client_cwd: &str) -> Option<PathBuf> {
@@ -90,15 +92,17 @@ impl InstanceKey {
         // server instances than required but should always be correct at least
         let mut workspace_root = PathBuf::from(&proto_init.cwd);
 
-        // naive detection whether the requested server is likely rust-analyzer
-        if proto_init.server.contains("rust-analyzer") {
-            if let Some(cargo_root) = find_cargo_workspace_root(&proto_init.cwd) {
-                workspace_root = cargo_root;
+        if config.workspace_detection {
+            // naive detection whether the requested server is likely rust-analyzer
+            if proto_init.server.contains("rust-analyzer") {
+                if let Some(cargo_root) = find_cargo_workspace_root(&proto_init.cwd) {
+                    workspace_root = cargo_root;
+                }
             }
-        }
-        // the ra-multiplex marker file overrides even the cargo workspace detection if present
-        if let Some(marked_root) = find_ra_multiplex_workspace_root(&proto_init.cwd) {
-            workspace_root = marked_root;
+            // the ra-multiplex marker file overrides even the cargo workspace detection if present
+            if let Some(marked_root) = find_ra_multiplex_workspace_root(&proto_init.cwd) {
+                workspace_root = marked_root;
+            }
         }
 
         InstanceKey {
