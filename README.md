@@ -115,6 +115,12 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # is documented in the `env_logger` documentation here:
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
+
+# attempt automatic workspace root detection
+#
+# when enabled every connected client will attempt to discover the root of the
+# workspace it was spawned in. otherwise the client CWD is always used
+workspace_detection = true
 ```
 
 
