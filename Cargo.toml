@@ -1,6 +1,6 @@
 [package]
 name = "ra-multiplex"
-version = "0.2.1"
+version = "0.2.2"
 description = "share one rust-analyzer server instance between multiple LSP clients to save resources"
 repository = "https://github.com/pr2502/ra-multiplex"
 license = "MIT"
