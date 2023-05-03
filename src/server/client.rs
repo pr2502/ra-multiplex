@@ -27,8 +27,38 @@ impl Client {
         let (socket_read, socket_write) = socket.into_split();
         let mut socket_read = BufReader::new(socket_read);
 
+        let client = Self::wait_for_initialize_request(port, &mut socket_read, registry).await?;
+
+        let (client_tx, client_rx) = client.register_client_with_instance().await;
+        let (close_tx, close_rx) = mpsc::channel(1);
+        client.spawn_input_task(client_rx, close_rx, socket_write);
+        client.spawn_output_task(socket_read, close_tx);
+
         let mut buffer = Vec::new();
-        let proto_init = proto::Init::from_reader(&mut buffer, &mut socket_read).await?;
+        client
+            .wait_for_initialize_response(client_tx, &mut buffer)
+            .await?;
+        Ok(())
+    }
+
+    async fn wait_for_initialize_request(
+        port: u16,
+        socket_read: &mut BufReader<OwnedReadHalf>,
+        registry: InstanceRegistry,
+    ) -> Result<Self> {
+        let mut buffer = Vec::new();
+        let (mut json, _bytes) = lsp::read_message(&mut *socket_read, &mut buffer)
+            .await?
+            .context("channel closed")?;
+        if !matches!(json.get("method"), Some(Value::String(method)) if method == "initialize") {
+            bail!("first client message was not InitializeRequest");
+        }
+
+        let proto_init = proto::Init::from_json(&json)?;
+
+        log::debug!("[{port}] recv InitializeRequest");
+        // this is an initialize request, it's special because it cannot be sent twice or
+        // rust-analyzer will crash.
 
         let key = InstanceKey::from_proto_init(&proto_init).await;
         log::debug!("client configured {key:?}");
@@ -39,48 +69,20 @@ impl Client {
             instance: registry.get(&key).await?,
         };
 
-        client.wait_for_initialize_request(&mut socket_read).await?;
-
-        let (client_tx, client_rx) = client.register_client_with_instance().await;
-        let (close_tx, close_rx) = mpsc::channel(1);
-        client.spawn_input_task(client_rx, close_rx, socket_write);
-        client.spawn_output_task(socket_read, close_tx);
-
-        client
-            .wait_for_initialize_response(client_tx, &mut buffer)
-            .await?;
-        Ok(())
-    }
-
-    async fn wait_for_initialize_request(
-        &mut self,
-        socket_read: &mut BufReader<OwnedReadHalf>,
-    ) -> Result<()> {
-        let mut buffer = Vec::new();
-        let port = self.port;
-        let (mut json, _bytes) = lsp::read_message(&mut *socket_read, &mut buffer)
-            .await?
-            .context("channel closed")?;
-        if !matches!(json.get("method"), Some(Value::String(method)) if method == "initialize") {
-            bail!("first client message was not InitializeRequest");
-        }
-        log::debug!("[{port}] recv InitializeRequest");
-        // this is an initialize request, it's special because it cannot be sent twice or
-        // rust-analyzer will crash.
-
         // we save the request id so we can later use it for the response
-        self.initialize_request_id = Some(
+        client.initialize_request_id = Some(
             json.remove("id")
                 .context("InitializeRequest is missing an `id`")?,
         );
-        if self.instance.init_cache.attempt_send_request() {
+        if client.instance.init_cache.attempt_send_request() {
             // it haven't been sent yet, we can send it.
             //
             // instead of tagging the original id we replace it with a custom id that only
             // the `initialize` uses
             json.insert("id".to_owned(), Value::String(INIT_REQUEST_ID.to_owned()));
 
-            self.instance
+            client
+                .instance
                 .message_writer
                 .send(Message::from_json(&json, &mut buffer))
                 .await
@@ -88,7 +90,7 @@ impl Client {
         } else {
             // initialize request was already sent for this instance, no need to send it again
         }
-        Ok(())
+        Ok(client)
     }
 
     async fn wait_for_initialize_response(
