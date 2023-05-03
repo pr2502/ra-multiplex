@@ -1,4 +1,5 @@
 use anyhow::{ensure, Context, Result};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -28,29 +29,41 @@ impl Init {
         }
     }
 
-    pub fn from_json(json: &serde_json::Map<String, Value>) -> Result<Self> {
-        let params = json
-            .get("params")
-            .context("expected params in initialization message")?;
-        let init_options = params
-            .get("initializationOptions")
-            .context("expected initializationOptions in params")?;
-
-        let mut server = None;
+    /// Create an `Init` instance from a raw initialization request.
+    ///
+    /// Removes the `raMultiplex` objects from `initializationOptions` if it is present.
+    pub fn from_json(json: &mut serde_json::Map<String, Value>) -> Result<Self> {
+        let mut server = Option::<String>::None;
         let mut args = Vec::new();
-        if let Some(config) = init_options.get("raMultiplex") {
-            server = config.get("server").and_then(|s| s.as_str());
-            if let Some(values) = config.get("args").and_then(|s| s.as_array()) {
-                for value in values {
-                    args.push(
-                        value
-                            .as_str()
-                            .context("expected args to be an array of strings")?
-                            .to_owned(),
-                    )
+
+        let params = json
+            .get_mut("params")
+            .context("initialization message should contain params")?;
+
+        let init_options = params
+            .get_mut("initializationOptions")
+            .context("params should contain initializationOptions")?;
+
+        if let Some(options) = init_options.as_object_mut() {
+            if let Some(config) = options.remove("raMultiplex") {
+                server = config
+                    .get("server")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string());
+                if let Some(values) = config.get("args").and_then(|s| s.as_array()) {
+                    for value in values {
+                        args.push(
+                            value
+                                .as_str()
+                                .context("args should to be an array of strings")?
+                                .to_owned(),
+                        )
+                    }
                 }
+            } else {
+                debug!("no `raMultiplex` objects in initialization request");
             }
-        };
+        }
 
         // TODO: this is deprecated and may be absent; try newer fields too.
         let cwd = params
@@ -66,7 +79,7 @@ impl Init {
             proto: env!("CARGO_PKG_NAME").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             cwd,
-            server: server.unwrap_or("rust-analyzer").to_string(),
+            server: server.unwrap_or("rust-analyzer".to_string()),
             args,
         })
     }
