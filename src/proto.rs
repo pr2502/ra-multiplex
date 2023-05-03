@@ -6,8 +6,6 @@ use std::env;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Init {
-    proto: String,
-    version: String,
     pub cwd: String,
     pub server: String,
     pub args: Vec<String>,
@@ -16,8 +14,6 @@ pub struct Init {
 impl Init {
     pub fn new(server: String, args: Vec<String>) -> Init {
         Init {
-            proto: env!("CARGO_PKG_NAME").to_owned(),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
             cwd: env::current_dir()
                 .expect("cannot access current directory")
                 .to_str()
@@ -73,18 +69,9 @@ impl Init {
             .to_owned();
 
         Ok(Init {
-            // FIXME: this values here don't really make sense, but need to figure out what to do
-            // with these fields
-            proto: env!("CARGO_PKG_NAME").to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
             cwd,
             server: server.unwrap_or("rust-analyzer".to_string()),
             args,
         })
-    }
-
-    /// returns true if the version matches
-    pub fn check_version(&self) -> bool {
-        self.proto == env!("CARGO_PKG_NAME") && self.version == env!("CARGO_PKG_VERSION")
     }
 }
