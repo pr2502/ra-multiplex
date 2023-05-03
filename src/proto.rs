@@ -1,9 +1,8 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Init {
@@ -82,28 +81,6 @@ impl Init {
             server: server.unwrap_or("rust-analyzer".to_string()),
             args,
         })
-    }
-
-    // XXX: unused
-    pub async fn from_reader<R: AsyncBufRead + Unpin>(
-        buffer: &mut Vec<u8>,
-        mut reader: R,
-    ) -> Result<Self> {
-        buffer.clear();
-        reader
-            .read_until(b'\0', &mut *buffer)
-            .await
-            .context("read proto init")?;
-        buffer.pop(); // remove trailing '\0'
-
-        let proto_init: Self =
-            serde_json::from_slice(buffer).context("invalid ra-multiplex proto init")?;
-        ensure!(
-            proto_init.check_version(),
-            "ra-multiplex client protocol version differs from server version"
-        );
-
-        Ok(proto_init)
     }
 
     /// returns true if the version matches
