@@ -8,7 +8,7 @@
 
 use crate::client::Client;
 use crate::instance::InstanceRegistry;
-use anyhow::{Context, bail, Result};
+use anyhow::{bail, Context, Result};
 use ra_multiplex::config::Config;
 use std::env;
 use tokio::net::TcpListener;
@@ -17,7 +17,6 @@ use tokio::task;
 mod async_once_cell;
 mod client;
 mod instance;
-mod lsp;
 
 #[tokio::main]
 async fn main() -> Result<()> {
