@@ -1,8 +1,10 @@
 use crate::async_once_cell::AsyncOnceCell;
-use crate::lsp::{self, Message};
 use anyhow::{bail, Context, Result};
-use ra_multiplex::config::Config;
-use ra_multiplex::proto;
+use ra_multiplex::{
+    config::Config,
+    lsp::{self, Message},
+    proto,
+};
 use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
