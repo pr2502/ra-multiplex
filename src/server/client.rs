@@ -54,7 +54,7 @@ impl Client {
             bail!("first client message was not InitializeRequest");
         }
 
-        let proto_init = proto::Init::from_json(&mut json)?;
+        let proto_init = proto::Init::from_init_request(&mut json)?;
 
         log::debug!("[{port}] recv InitializeRequest");
         // this is an initialize request, it's special because it cannot be sent twice or

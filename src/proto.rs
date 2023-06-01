@@ -27,7 +27,7 @@ impl Init {
     /// Create an `Init` instance from a raw initialization request.
     ///
     /// Removes the `raMultiplex` objects from `initializationOptions` if it is present.
-    pub fn from_json(json: &mut serde_json::Map<String, Value>) -> Result<Self> {
+    pub fn from_init_request(json: &mut serde_json::Map<String, Value>) -> Result<Self> {
         let mut server = Option::<String>::None;
         let mut args = Vec::new();
 
