@@ -1,4 +1,4 @@
-use crate::instance::{
+use super::instance::{
     InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
 };
 use anyhow::{bail, Context, Result};
