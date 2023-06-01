@@ -6,6 +6,13 @@ mod server;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// No command defaults to client
+    #[command(subcommand)]
+    command: Cmd,
+}
+
+#[derive(Args, Debug, Default)]
+struct ClientArgs {
     /// Path to the LSP server executable
     #[arg(
         long,
@@ -15,12 +22,8 @@ struct Cli {
     )]
     server_path: String,
 
-    /// No command defaults to client
-    #[command(subcommand)]
-    command: Cmd,
-
     /// Arguments passed to the LSP server
-    rest: Vec<String>,
+    server_args: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -30,14 +33,19 @@ struct ServerArgs {
     dump: bool,
 }
 
-#[derive(Subcommand, Debug, Default)]
+#[derive(Subcommand, Debug)]
 enum Cmd {
-    #[default]
     /// Connect to a ra-mux server
-    Client,
+    Client(ClientArgs),
 
     /// Start a ra-mux server
     Server(ServerArgs),
+}
+
+impl Default for Cmd {
+    fn default() -> Self {
+        Cmd::Client(ClientArgs::default())
+    }
 }
 
 #[tokio::main]
@@ -45,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Cmd::Client => client::main(cli.server_path, cli.rest).await,
+        Cmd::Client(args) => client::main(args.server_path, args.server_args).await,
         Cmd::Server(args) => server::main(args.dump).await,
     }
 }
