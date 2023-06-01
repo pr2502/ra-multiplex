@@ -1,4 +1,4 @@
-use crate::async_once_cell::AsyncOnceCell;
+use super::async_once_cell::AsyncOnceCell;
 use anyhow::{bail, Context, Result};
 use ra_multiplex::{
     config::Config,
