@@ -4,23 +4,31 @@ use super::instance::{
 use anyhow::{bail, Context, Result};
 use ra_multiplex::{lsp::{Message, self}, proto};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::{select, task};
 
+pub type ResponseSet = Arc<Mutex<HashSet<String>>>;
 pub struct Client {
     port: u16,
     initialize_request_id: Option<Value>,
     instance: Arc<RaInstance>,
+    responses: ResponseSet,
 }
 
 impl Client {
     /// finds or spawns a rust-analyzer instance and connects the client
-    pub async fn process(socket: TcpStream, port: u16, registry: InstanceRegistry) -> Result<()> {
+    pub async fn process(
+        socket: TcpStream,
+        port: u16,
+        registry: InstanceRegistry,
+        responses: ResponseSet,
+    ) -> Result<()> {
         let (socket_read, socket_write) = socket.into_split();
         let mut socket_read = BufReader::new(socket_read);
 
@@ -34,6 +42,7 @@ impl Client {
             port,
             initialize_request_id: None,
             instance: registry.get(&key).await?,
+            responses,
         };
 
         client.wait_for_initialize_request(&mut socket_read).await?;
@@ -171,6 +180,7 @@ impl Client {
         let port = self.port;
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
+        let responses = self.responses.clone();
         task::spawn(async move {
             match read_client_socket(
                 socket_read,
@@ -178,6 +188,7 @@ impl Client {
                 close_tx,
                 port,
                 &instance.init_cache,
+                responses,
             )
             .await
             {
@@ -204,6 +215,7 @@ async fn read_client_socket(
     close_tx: mpsc::Sender<Message>,
     port: u16,
     init_cache: &InitializeCache,
+    responses: ResponseSet,
 ) -> Result<()> {
     let mut buffer = Vec::new();
 
@@ -223,7 +235,8 @@ async fn read_client_socket(
                 continue;
             }
         }
-        if matches!(json.get("method"), Some(Value::String(method)) if method == "shutdown") {
+        let method = json.get("method");
+        if matches!(method, Some(Value::String(method)) if method == "shutdown") {
             // client requested the server to shut down but other clients might still be connected.
             // instead we disconnect this client to prevent the editor hanging
             // see <https://github.com/pr2502/ra-multiplex/issues/5>
@@ -244,14 +257,30 @@ async fn read_client_socket(
             break;
         }
         if let Some(id) = json.get("id") {
-            // messages containing an id need the id modified so we can discern which client to send
-            // the response to
-            let tagged_id = tag_id(port, id)?;
-            json.insert("id".to_owned(), Value::String(tagged_id));
+            if matches!(method, Some(_)) {
+                // methods containing an id need the id modified so we can discern which client to send
+                // the response to
+                let tagged_id = tag_id(port, id)?;
+                json.insert("id".to_owned(), Value::String(tagged_id));
 
-            let message = Message::from_json(&json, &mut buffer);
-            if tx.send(message).await.is_err() {
-                break;
+                let message = Message::from_json(&json, &mut buffer);
+                if tx.send(message).await.is_err() {
+                    break;
+                }
+            } else if matches!(json.get("result"), Some(_))
+                && responses.lock().await.insert(
+                    id.as_str()
+                        .map(|x| x.to_string())
+                        .unwrap_or_else(|| id.to_string()),
+                )
+            {
+                // Don't modify the id of a response.
+                // Only send the response of the first client, suboptimal
+                // May want to special case workspace/configuration
+                let message = Message::from_bytes(bytes);
+                if tx.send(message).await.is_err() {
+                    break;
+                }
             }
         } else {
             // notification messages without an id don't need any modification and can be forwarded
