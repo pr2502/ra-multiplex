@@ -337,6 +337,10 @@ impl RaInstance {
             // child closes and all the clients disconnect including the sender and this receiver
             // will not keep blocking (unlike in client input task)
             while let Some(message) = receiver.recv().await {
+                log::trace!(
+                    "rpc.send[server] {}",
+                    std::str::from_utf8(message.as_bytes()).unwrap_or("not utf-8")
+                );
                 if let Err(err) = message.to_writer(&mut stdin).await {
                     match err.kind() {
                         // stdin is closed, no need to log an error
@@ -430,7 +434,10 @@ async fn read_server_socket(
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
-        log::trace!("{}", Value::Object(json.clone()));
+        log::trace!(
+            "rpc.receive[server] {}",
+            std::str::from_utf8(bytes).unwrap_or("not utf-8")
+        );
 
         if let Some(id) = json.get("id") {
             // we tagged the request id so we expect to only receive tagged responses

@@ -144,6 +144,10 @@ impl Client {
                 message = close_rx.recv() => message,
                 message = rx.recv() => message,
             } {
+                log::trace!(
+                    "rpc.send[client] {}",
+                    std::str::from_utf8(message.as_bytes()).unwrap_or("not utf-8")
+                );
                 if let Err(err) = message.to_writer(&mut socket_write).await {
                     match err.kind() {
                         // ignore benign errors, treat as socket close
@@ -204,6 +208,11 @@ async fn read_client_socket(
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut socket_read, &mut buffer).await? {
+        log::trace!(
+            "rpc.receive[client] {}",
+            std::str::from_utf8(bytes).unwrap_or("not utf-8")
+        );
+
         if matches!(json.get("method"), Some(Value::String(method)) if method == "initialized") {
             // initialized notification can only be sent once per server
             if init_cache.attempt_send_notif() {
