@@ -1,3 +1,5 @@
+use std::env;
+
 use clap::{Args, Parser, Subcommand};
 
 mod client;
@@ -49,6 +51,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Cmd::Server(args)) => server::main(args.dump).await,
         Some(Cmd::Client(args)) => client::main(args.server_path, args.server_args).await,
-        None => client::main("rust-analyzer".into(), vec![]).await,
+        None => {
+            let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
+            client::main(server_path, vec![]).await
+        }
     }
 }
