@@ -8,10 +8,10 @@ mod server;
 struct Cli {
     /// No command defaults to client
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
-#[derive(Args, Debug, Default)]
+#[derive(Args, Debug)]
 struct ClientArgs {
     /// Path to the LSP server executable
     #[arg(
@@ -42,18 +42,13 @@ enum Cmd {
     Server(ServerArgs),
 }
 
-impl Default for Cmd {
-    fn default() -> Self {
-        Cmd::Client(ClientArgs::default())
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Cmd::Client(args) => client::main(args.server_path, args.server_args).await,
-        Cmd::Server(args) => server::main(args.dump).await,
+        Some(Cmd::Server(args)) => server::main(args.dump).await,
+        Some(Cmd::Client(args)) => client::main(args.server_path, args.server_args).await,
+        None => client::main("rust-analyzer".into(), vec![]).await,
     }
 }
