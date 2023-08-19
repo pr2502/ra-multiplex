@@ -9,15 +9,16 @@ windows) to share a single `rust-analyzer` instance per cargo workspace.
 
 ## How it works
 
-`ra-multiplex` acts like `rust-analyzer` but only connects to a TCP socket at `127.0.0.1:27631` and
-pipes stdin and stdout through it.
+`ra-multiplex` acts like `rust-analyzer` but only connects to a TCP socket at
+`127.0.0.1:27631` and pipes stdin and stdout through it.
 
-Depending on the working directory the `ra-multiplex` client was spawned from it can reuse an already spawned `rust-analyzer`
-instance. It detects workspace root as the furthermost ancestor directory
-containing a `Cargo.toml` file. If the automatic workspace detection fails or
-if you're not using `rust-analyzer` as a server you can create a marker file
-`.ra-multiplex-workspace-root` in the directory you want to use as a workspace
-root, the first ancestor directory containing this file will be used.
+Depending on the working directory the `ra-multiplex` client was spawned from
+it can reuse an already spawned `rust-analyzer` instance. It detects workspace
+root as the furthermost ancestor directory containing a `Cargo.toml` file. If
+the automatic workspace detection fails or if you're not using `rust-analyzer`
+as a server you can create a marker file `.ra-multiplex-workspace-root` in the
+directory you want to use as a workspace root, the first ancestor directory
+containing this file will be used.
 
 Because neither LSP nor `rust-analyzer` itself support multiple clients per
 server `ra-multiplex` caches the handshake messages and modifies IDs of
@@ -43,18 +44,29 @@ Run `ra-multiplex` in server mode, make sure that `rust-analyzer` is in your
 ```sh
 $ which rust-analyzer
 /home/user/.cargo/bin/rust-analyzer
-$ target/release/ra-multiplex server
+$ target/release/ra-multiplex --help
+share one rust-analyzer server instance between multiple LSP clients to save resources
+
+Usage: ra-multiplex [COMMAND]
+
+Commands:
+  client  Connect to a ra-mux server [default]
+  server  Start a ra-mux server
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
 
 `ra-multiplex server` can run as a systemd user service, see the example `ra-mux.service`.
 
-Configure your editor to use `ra-multiplex client` as `rust-analyzer`, for example for
+Configure your editor to use `ra-multiplex` as `rust-analyzer`, for example for
 CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
 
 ```json
 {
-    "rust-analyzer.serverPath": "/path/to/ra-multiplex",
-    "rust-analyzer.serverArgs": ["client"]
+    "rust-analyzer.serverPath": "/path/to/ra-multiplex"
 }
 ```
 
@@ -63,8 +75,8 @@ CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
 
 Configuration is stored in a TOML file in your system's default configuration
 directory, for example `~/.config/ra-multiplex/config.toml`. If you're not sure
-where that is on your system starting `ra-multiplex` without a config file present will print a warning with
-the expected path.
+where that is on your system starting `ra-multiplex` without a config file
+present will print a notice with the expected path.
 
 Note that the configuration file is likely not necessary and `ra-multiplex`
 should be usable with all defaults.
@@ -145,8 +157,7 @@ Or to set a custom path for `rust-analyzer` with `coc-rust-analyzer` add to
 ```json
 {
     "rust-analyzer.server.path": "/home/user/.cargo/bin/ra-multiplex",
-    "rust-analyzer.server.extraEnv": { "RA_MUX_SERVER": "/custom/path/rust-analyzer" },
-    "rust-analyzer.serverArgs": ["client"]
+    "rust-analyzer.server.extraEnv": { "RA_MUX_SERVER": "/custom/path/rust-analyzer" }
 }
 ```
 
@@ -157,7 +168,7 @@ need a script like `/usr/local/bin/clangd-proxy`:
 
 ```sh
 #!/bin/sh
-RA_MUX_SERVER=/usr/bin/clangd exec /home/user/.cargo/bin/ra-multiplex client $@
+RA_MUX_SERVER=/usr/bin/clangd exec /home/user/.cargo/bin/ra-multiplex client --ra-mux-server /usr/bin/clangd $@
 ```
 
 And configure the editor to use the wrapper script in

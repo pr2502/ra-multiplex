@@ -37,7 +37,7 @@ struct ServerArgs {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Connect to a ra-mux server
+    /// Connect to a ra-mux server [default]
     Client(ClientArgs),
 
     /// Start a ra-mux server
