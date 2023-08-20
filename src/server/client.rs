@@ -2,7 +2,10 @@ use super::instance::{
     InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
 };
 use anyhow::{bail, Context, Result};
-use ra_multiplex::{lsp::{Message, self}, proto};
+use ra_multiplex::{
+    lsp::{self, Message},
+    proto,
+};
 use serde_json::{json, Map, Value};
 use std::io::ErrorKind;
 use std::sync::Arc;
