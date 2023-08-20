@@ -19,3 +19,7 @@ jobs:
         run: cargo build
       - name: Test
         run: cargo test
+      - name: Clippy
+        run: cargo clippy
+      - name: Rustfmt
+        run: cargo fmt --check
