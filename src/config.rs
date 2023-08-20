@@ -106,14 +106,17 @@ pub struct Config {
 
 #[cfg(test)]
 #[test]
-fn generate_default_config() {
+fn generate_default_and_check_it_matches_commited_defaults() {
     use std::fs;
     use std::path::Path;
 
-    let config = Config::default_values();
-    let config = toml::to_vec(&config).expect("failed serialize");
+    let generated_defaults = Config::default_values();
+    let generated_defaults = toml::to_string(&generated_defaults).expect("failed serialize");
+
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults.toml");
-    fs::write(path, config).expect("failed writing defaults.toml file");
+    let saved_defaults = fs::read_to_string(path).expect("failed reading defaults.toml file");
+
+    assert_eq!(generated_defaults, saved_defaults);
 }
 
 impl Config {
