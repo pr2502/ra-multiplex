@@ -42,7 +42,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 ///
 /// Headers are terminated by `\r\n` sequence and the final header is followed by another `\r\n`.
 /// The currently recognized headers are `content-type` which is optional and contains a `string`
-/// (something like a MIME-type) and `content-length` which contains the lenght of the message body
+/// (something like a MIME-type) and `content-length` which contains the length of the message body
 /// after the final `\r\n` of the header. Header names and values are separated by `: `.
 pub struct Header {
     pub content_length: usize,
