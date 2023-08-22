@@ -16,9 +16,9 @@ jobs:
         with:
           components: clippy, rustfmt
       - name: Build
-        run: cargo build
+        run: cargo build --locked
       - name: Test
-        run: cargo test
+        run: cargo test --locked
       - name: Clippy
         run: cargo clippy
       - name: Rustfmt
