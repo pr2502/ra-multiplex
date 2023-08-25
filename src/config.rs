@@ -1,7 +1,8 @@
 use anyhow::Context;
 use directories::ProjectDirs;
 use serde::de::{Error, Unexpected};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
+use serde_derive::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use tokio::fs;
 use tokio::sync::OnceCell;

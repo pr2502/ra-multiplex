@@ -1,5 +1,5 @@
 use anyhow::{ensure, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde_derive::{Deserialize, Serialize};
 use std::env;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
