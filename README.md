@@ -135,7 +135,7 @@ workspace_detection = true
 
 ## Other LSP servers
 
-By default `ra-multplex` uses a `rust-analyzer` binary found in its `$PATH` as
+By default `ra-multiplex` uses a `rust-analyzer` binary found in its `$PATH` as
 the server. This can be overridden using the `--ra-mux-server` cli option or
 `RA_MUX_SERVER` environment variable. You can usually configure one of these in
 your editor configuration. If both are specified the cli option overrides the
