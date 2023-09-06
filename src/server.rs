@@ -9,6 +9,7 @@
 use crate::server::client::Client;
 use crate::server::instance::InstanceRegistry;
 use anyhow::{Context, Result};
+use client::ResponseSet;
 use ra_multiplex::config::Config;
 use tokio::net::TcpListener;
 use tokio::task;
@@ -23,6 +24,7 @@ pub async fn main(dump: bool) -> Result<()> {
     }
     let config = Config::load_or_default().await;
     let registry = InstanceRegistry::new().await;
+    let responses: ResponseSet = Default::default();
 
     let listener = TcpListener::bind(config.listen).await.context("listen")?;
     loop {
@@ -32,8 +34,9 @@ pub async fn main(dump: bool) -> Result<()> {
                 let registry = registry.clone();
 
                 log::info!("[{port}] client connected");
+                let responses = responses.clone();
                 task::spawn(async move {
-                    match Client::process(socket, port, registry).await {
+                    match Client::process(socket, port, registry, responses).await {
                         Ok(_) => log::debug!("[{port}] client initialized"),
                         Err(err) => log::error!("[{port}] client error: {err:?}"),
                     }

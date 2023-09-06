@@ -337,6 +337,10 @@ impl RaInstance {
             // child closes and all the clients disconnect including the sender and this receiver
             // will not keep blocking (unlike in client input task)
             while let Some(message) = receiver.recv().await {
+                log::trace!(
+                    "rpc.send[server] {}",
+                    std::str::from_utf8(message.as_bytes()).unwrap_or("not utf-8")
+                );
                 if let Err(err) = message.to_writer(&mut stdin).await {
                     match err.kind() {
                         // stdin is closed, no need to log an error
@@ -421,6 +425,17 @@ fn parse_tagged_id(tagged: &str) -> Result<(u16, Value)> {
     };
     Ok((port, old_id))
 }
+async fn forward_server_request(
+    bytes: &[u8],
+    senders: &RwLock<HashMap<u16, mpsc::Sender<Message>>>,
+) {
+    let message = Message::from_bytes(bytes);
+    let senders = senders.read().await;
+    // Forward this notification/request to all clients
+    for sender in senders.values() {
+        let _ = sender.send(message.clone()).await;
+    }
+}
 
 async fn read_server_socket(
     mut reader: BufReader<ChildStdout>,
@@ -430,11 +445,14 @@ async fn read_server_socket(
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
-        log::trace!("{}", Value::Object(json.clone()));
+        log::trace!(
+            "rpc.receive[server] {}",
+            std::str::from_utf8(bytes).unwrap_or("not utf-8")
+        );
 
         if let Some(id) = json.get("id") {
             // we tagged the request id so we expect to only receive tagged responses
-            let tagged_id = match id {
+            match id {
                 Value::String(string) if string == INIT_REQUEST_ID => {
                     // this is a response to the InitializeRequest, we need to process it
                     // separately
@@ -445,54 +463,36 @@ async fn read_server_socket(
                         .await
                         .ok() // throw away the Err(message), we don't need it and it doesn't implement std::error::Error
                         .context("received multiple InitializeRequest responses from instance")?;
-                    continue;
                 }
-                Value::String(string) => string,
+                Value::String(tagged_id) => {
+                    match parse_tagged_id(tagged_id) {
+                        Ok((port, old_id)) => {
+                            json.insert("id".to_owned(), old_id);
+
+                            if let Some(sender) = senders.read().await.get(&port) {
+                                let message = Message::from_json(&json, &mut buffer);
+                                // ignore closed channels
+                                let _ignore = sender.send(message).await;
+                            } else {
+                                log::warn!("[{port}] no client");
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!("not tagged id, {err:?}");
+                            log::debug!("server notification/request {}", Value::Object(json));
+                            forward_server_request(bytes, senders).await;
+                        }
+                    };
+                }
+                Value::Number(_) => {
+                    log::warn!("not tagged id, type is number");
+                    log::debug!("server notification/request {}", Value::Object(json));
+                    forward_server_request(bytes, senders).await;
+                }
                 _ => {
-                    log::debug!("response to no request {}", Value::Object(json));
-                    // FIXME uncommenting this crashes rust-analyzer, presumably because the client
-                    // then sends a confusing response or something? i'm guessing that the response
-                    // id gets tagged with port but rust-analyzer expects to know the id because
-                    // it's actually a response and not a request. i'm not sure if we can handle
-                    // these at all with multiple clients attached
-                    //
-                    // ideally we could send these to all clients, but what if there is a matching
-                    // response from each client? rust-analyzer only expects one (this might
-                    // actually be why it's crashing)
-                    //
-                    // ignoring these might end up being the safest option, they don't seem to
-                    // matter to neovim anyway
-                    // ```rust
-                    // let message = Message::from_bytes(bytes);
-                    // let senders = senders.read().await;
-                    // for sender in senders.values() {
-                    //     sender
-                    //         .send(message.clone())
-                    //         .await
-                    //         .context("forward server notification")?;
-                    // }
-                    // ```
-                    continue;
+                    log::error!("Unexpected id type: {id:?}");
                 }
             };
-
-            let (port, old_id) = match parse_tagged_id(tagged_id) {
-                Ok(ok) => ok,
-                Err(err) => {
-                    log::warn!("invalid tagged id {err:?}");
-                    continue;
-                }
-            };
-
-            json.insert("id".to_owned(), old_id);
-
-            if let Some(sender) = senders.read().await.get(&port) {
-                let message = Message::from_json(&json, &mut buffer);
-                // ignore closed channels
-                let _ignore = sender.send(message).await;
-            } else {
-                log::warn!("[{port}] no client");
-            }
         } else {
             // notification messages without an id are sent to all clients
             let message = Message::from_bytes(bytes);
