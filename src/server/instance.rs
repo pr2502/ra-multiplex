@@ -18,9 +18,13 @@ use std::str::{self, FromStr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use sysinfo::SystemExt;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    time::Instant,
+};
 use tokio::{select, task, time};
 
 /// keeps track of the initialize/initialized handshake for an instance
@@ -117,6 +121,7 @@ impl InstanceKey {
 
 pub struct RaInstance {
     pid: u32,
+    spawned_at: Instant,
     /// wakes up the wait_task and asks it to send SIGKILL to the instance
     close: Notify,
     /// make sure only one timeout_task is running for an instance
@@ -170,15 +175,21 @@ impl InstanceRegistry {
     async fn spawn_gc_task(&self) {
         let config = Config::load_or_default().await;
         let gc_interval = config.gc_interval.into();
-        let instance_timeout = config.instance_timeout.map(<_>::from);
+        let instance_timeout = config.instance_timeout.map(u64::from);
+        let min_available_memory = config.min_available_memory.map(u64::from);
 
         let registry = self.clone();
         let mut closed_ports = Vec::new();
+        let mut sysinfo = sysinfo::System::new();
+
         task::spawn(async move {
             loop {
                 time::sleep(Duration::from_secs(gc_interval)).await;
 
-                for (key, instance) in registry.map.lock().await.iter() {
+                let map = registry.map.lock().await;
+
+                // Clean-up message_readers
+                for instance in map.values() {
                     for (port, sender) in instance.message_readers.read().await.iter() {
                         if sender.is_closed() {
                             closed_ports.push(*port);
@@ -188,7 +199,42 @@ impl InstanceRegistry {
                     for port in closed_ports.drain(..) {
                         message_readers.remove(&port);
                     }
+                }
+
+                // First check if we need to immediately kill any instances.
+                if let Some(min_available) = min_available_memory {
+                    sysinfo.refresh_memory();
+                    let available_memory = sysinfo.available_memory();
+
+                    if available_memory < min_available {
+                        let mut oldest = None;
+
+                        for instance in map.values() {
+                            if instance.message_readers.read().await.is_empty() {
+                                oldest = match oldest {
+                                    None => Some(instance),
+                                    Some(old) => {
+                                        Some(std::cmp::min_by_key(old, instance, |i| i.spawned_at))
+                                    }
+                                };
+                            }
+                        }
+
+                        if let Some(oldest) = oldest {
+                            let pid = oldest.pid;
+                            let path = oldest.key.workspace_root.display();
+                            log::warn!("[{path} {pid}] system low on memory, stopping now)");
+                            oldest.close.notify_one();
+                        } else {
+                            log::debug!("low on memory, no instance without connections to kill");
+                        }
+                    }
+                }
+
+                // Now check for instances that need a timeout.
+                for (key, instance) in map.iter() {
                     if let Some(instance_timeout) = instance_timeout {
+                        let message_readers = instance.message_readers.read().await;
                         if message_readers.is_empty() && instance.attempt_start_timeout() {
                             registry.spawn_timeout_task(key, instance_timeout);
                             let pid = instance.pid;
@@ -261,6 +307,7 @@ impl RaInstance {
 
         let instance = Arc::new(RaInstance {
             pid,
+            spawned_at: Instant::now(),
             close: Notify::new(),
             timeout_running: AtomicBool::new(false),
             key: key.to_owned(),

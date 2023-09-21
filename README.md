@@ -95,8 +95,18 @@ Example configuration file:
 # you can set this option to `false` for infinite timeout
 instance_timeout = 300 # after 5 minutes
 
+# when available system memory drops below this amount, the oldest rust-analyzer
+# server instance wih no clients will get killed immediately to save memory.
+#
+# if all server instances have connected clients, then nothing will happen.
+#
+# you can set this option to `false` to disable it, or set it to some value in
+# bytes to enable it, such as "4 GB".
+min_available_memory = false
+
 # time in seconds how long to wait between the gc task checks for disconnected
-# clients and possibly starts a timeout task. the value must be at least 1.
+# clients and available system memory, and possibly starts a timeout task. the
+# value must be at least 1.
 gc_interval = 10 # every 10 seconds
 
 # ip address and port on which ra-multiplex-server listens
