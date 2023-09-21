@@ -15,6 +15,10 @@ mod default {
         Some(5 * 60)
     }
 
+    pub fn min_available_memory() -> Option<byte_unit::Byte> {
+        None
+    }
+
     pub fn gc_interval() -> u32 {
         // 10 seconds
         10
@@ -41,28 +45,44 @@ mod default {
 mod de {
     use super::*;
 
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOf<T> {
+        Bool(bool),
+        Value(T),
+    }
+
     /// parse either bool(false) or u32
     pub fn instance_timeout<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum OneOf {
-            Bool(bool),
-            U32(u32),
-        }
-
         match OneOf::deserialize(deserializer) {
-            Ok(OneOf::U32(value)) => Ok(Some(value)),
+            Ok(OneOf::Value(value)) => Ok(Some(value)),
             Ok(OneOf::Bool(false)) => Ok(None),
             Ok(OneOf::Bool(true)) => Err(Error::invalid_value(
                 Unexpected::Bool(true),
                 &"a non-negative integer or false",
             )),
-            Err(_) => Err(Error::custom(
-                "invalid type: expected a non-negative integer or false",
+            Err(_) => Err(Error::custom("invalid type: expected a non-negative integer or false")),
+        }
+    }
+
+    /// parse either bool(false) or a number in bytes
+    pub fn min_available_memory<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<byte_unit::Byte>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match OneOf::deserialize(deserializer) {
+            Ok(OneOf::Value(value)) => Ok(Some(value)),
+            Ok(OneOf::Bool(false)) => Ok(None),
+            Ok(OneOf::Bool(true)) => Err(Error::invalid_value(
+                Unexpected::Bool(true),
+                &"a value in bytes (e.g. '100 MB') or false",
             )),
+            Err(_) => Err(Error::custom("invalid type: expected a value in bytes (e.g. '100 MB') or false")),
         }
     }
 
@@ -87,6 +107,10 @@ pub struct Config {
     #[serde(default = "default::instance_timeout")]
     #[serde(deserialize_with = "de::instance_timeout")]
     pub instance_timeout: Option<u32>,
+
+    #[serde(default = "default::min_available_memory")]
+    #[serde(deserialize_with = "de::min_available_memory")]
+    pub min_available_memory: Option<byte_unit::Byte>,
 
     #[serde(default = "default::gc_interval")]
     #[serde(deserialize_with = "de::gc_interval")]
@@ -129,6 +153,7 @@ impl Config {
             connect: default::connect(),
             log_filters: default::log_filters(),
             workspace_detection: default::workspace_detection(),
+            min_available_memory: default::min_available_memory(),
         }
     }
 
