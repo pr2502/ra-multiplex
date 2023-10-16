@@ -29,11 +29,7 @@ struct ClientArgs {
 }
 
 #[derive(Args, Debug)]
-struct ServerArgs {
-    /// Dump all communication with the client
-    #[arg(long)]
-    dump: bool,
-}
+struct ServerArgs {}
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
@@ -49,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Cmd::Server(args)) => server::main(args.dump).await,
+        Some(Cmd::Server(_args)) => server::main().await,
         Some(Cmd::Client(args)) => client::main(args.server_path, args.server_args).await,
         None => {
             let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
