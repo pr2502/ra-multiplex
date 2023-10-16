@@ -17,10 +17,7 @@ mod async_once_cell;
 mod client;
 mod instance;
 
-pub async fn main(dump: bool) -> Result<()> {
-    if dump {
-        todo!("--dump is not yet implemented");
-    }
+pub async fn main() -> Result<()> {
     let config = Config::load_or_default().await;
     let registry = InstanceRegistry::new().await;
 
