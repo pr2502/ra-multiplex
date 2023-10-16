@@ -12,6 +12,7 @@ clap = { version = "4.3.0", features = ["derive", "env"] }
 directories = "4.0.1"
 env_logger = "0.10.0"
 log = "0.4.14"
+pin-project-lite = "0.2.13"
 serde = { version = "1.0.186" }
 serde_derive = { version = "1.0.186" }
 serde_json = "1.0.78"
