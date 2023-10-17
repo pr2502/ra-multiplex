@@ -20,7 +20,7 @@ use tracing::{debug, error, info, info_span, instrument, trace, warn, Instrument
 
 use crate::async_once_cell::AsyncOnceCell;
 use crate::config::Config;
-use crate::lsp::{self, Message};
+use crate::lsp::transport::{LspReader, Message};
 use crate::proto;
 
 /// keeps track of the initialize/initialized handshake for an instance
@@ -441,13 +441,14 @@ fn parse_tagged_id(tagged: &str) -> Result<(u16, Value)> {
 }
 
 async fn read_server_socket(
-    mut reader: BufReader<ChildStdout>,
+    reader: BufReader<ChildStdout>,
     senders: &MessageReaders,
     init_cache: &InitializeCache,
 ) -> Result<()> {
+    let mut reader = LspReader::new(reader);
     let mut buffer = Vec::new();
 
-    while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
+    while let Some((mut json, bytes)) = reader.read_message().await? {
         trace!(message = serde_json::to_string(&json).unwrap(), "server");
 
         if let Some(id) = json.get("id") {
