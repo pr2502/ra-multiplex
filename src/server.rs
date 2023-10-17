@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use ra_multiplex::config::Config;
 use tokio::net::TcpListener;
 use tokio::task;
+use tracing::{debug, error, info, info_span, warn, Instrument};
 
 mod async_once_cell;
 mod client;
@@ -28,18 +29,21 @@ pub async fn main() -> Result<()> {
                 let port = addr.port();
                 let registry = registry.clone();
 
-                log::info!("[{port}] client connected");
-                task::spawn(async move {
-                    match Client::process(socket, port, registry).await {
-                        Ok(_) => log::debug!("[{port}] client initialized"),
-                        Err(err) => log::error!("[{port}] client error: {err:?}"),
+                task::spawn(
+                    async move {
+                        info!("client connected");
+                        match Client::process(socket, port, registry).await {
+                            Ok(_) => debug!("client initialized"),
+                            Err(err) => error!("client error: {err:?}"),
+                        }
                     }
-                });
+                    .instrument(info_span!("client", %port)),
+                );
             }
             Err(err) => match err.kind() {
                 // ignore benign errors
                 std::io::ErrorKind::NotConnected => {
-                    log::warn!("listener error {err}");
+                    warn!("listener error {err}");
                 }
                 _ => {
                     Err(err).context("accept connection")?;

@@ -6,6 +6,7 @@ use serde_derive::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use tokio::fs;
 use tokio::sync::OnceCell;
+use tracing::info;
 
 mod default {
     use super::*;
@@ -147,10 +148,19 @@ impl Config {
 
     /// panics if called multiple times
     fn init_logger(&self) {
-        env_logger::Builder::from_env(env_logger::Env::new().default_filter_or(&self.log_filters))
-            .format_timestamp(None)
-            .format_module_path(false)
-            .format_target(false)
+        use tracing_subscriber::{prelude::*, EnvFilter};
+
+        let format = tracing_subscriber::fmt::layer()
+            .without_time()
+            .with_target(false);
+
+        let filter = EnvFilter::try_from_default_env()
+            .or_else(|_| EnvFilter::try_new(&self.log_filters))
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(format)
             .init();
     }
 
@@ -168,9 +178,9 @@ impl Config {
                 };
                 let global_config = Box::leak(Box::new(config));
                 global_config.init_logger();
-                if let Some(load_err) = load_err {
+                if let Some(err) = load_err {
                     // log only after the logger has been initialized
-                    log::info!("cannot load config, continuing with defaults: {load_err:?}");
+                    info!(?err, "cannot load config, continuing with defaults");
                 }
                 &*global_config
             })
