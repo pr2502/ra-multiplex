@@ -115,6 +115,10 @@ where
     }
 }
 
+pub struct LspWriter<W> {
+    writer: W,
+}
+
 /// LSP messages
 #[derive(Clone)]
 pub struct Message {
@@ -124,6 +128,24 @@ pub struct Message {
 impl Debug for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Message")
+    }
+}
+
+impl<W> LspWriter<W>
+where
+    W: AsyncWrite + Unpin,
+{
+    pub fn new(writer: W) -> Self {
+        LspWriter { writer }
+    }
+
+    /// serialize LSP message into a writer, prepending the appropriate content-length header
+    pub async fn write_message(&mut self, message: Message) -> io::Result<()> {
+        self.writer
+            .write_all(format!("Content-Length: {}\r\n\r\n", message.bytes.len()).as_bytes())
+            .await?;
+        self.writer.write_all(&message.bytes).await?;
+        self.writer.flush().await
     }
 }
 
@@ -144,17 +166,5 @@ impl Message {
         buffer.clear();
         serde_json::to_writer(&mut *buffer, json).expect("invalid json");
         Self::from_bytes(&*buffer)
-    }
-
-    /// serialize LSP message into a writer, prepending the appropriate content-length header
-    pub async fn to_writer<W>(&self, mut writer: W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        writer
-            .write_all(format!("Content-Length: {}\r\n\r\n", self.bytes.len()).as_bytes())
-            .await?;
-        writer.write_all(&self.bytes).await?;
-        writer.flush().await
     }
 }

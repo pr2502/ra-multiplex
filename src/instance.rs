@@ -1,8 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::ErrorKind;
-#[cfg(unix)]
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::{self, FromStr};
@@ -20,7 +18,7 @@ use tracing::{debug, error, info, info_span, instrument, trace, warn, Instrument
 
 use crate::async_once_cell::AsyncOnceCell;
 use crate::config::Config;
-use crate::lsp::transport::{LspReader, Message};
+use crate::lsp::transport::{LspReader, LspWriter, Message};
 use crate::proto;
 
 /// keeps track of the initialize/initialized handshake for an instance
@@ -350,7 +348,7 @@ impl RaInstance {
     /// read messages sent by clients from a channel and write them into server stdin
     fn spawn_stdin_task(self: &Arc<Self>, rx: mpsc::Receiver<Message>, stdin: ChildStdin) {
         let mut receiver = rx;
-        let mut stdin = stdin;
+        let mut writer = LspWriter::new(stdin);
 
         task::spawn(
             async move {
@@ -358,7 +356,7 @@ impl RaInstance {
                 // child closes and all the clients disconnect including the sender and this receiver
                 // will not keep blocking (unlike in client input task)
                 while let Some(message) = receiver.recv().await {
-                    if let Err(err) = message.to_writer(&mut stdin).await {
+                    if let Err(err) = writer.write_message(message).await {
                         match err.kind() {
                             // stdin is closed, no need to log an error
                             ErrorKind::BrokenPipe => {}
@@ -405,7 +403,7 @@ impl RaInstance {
                             match exit {
                                 Ok(status) => {
                                     #[cfg(unix)]
-                                    let signal = status.signal();
+                                    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
                                     #[cfg(not(unix))]
                                     let signal = tracing::field::Empty;
 
