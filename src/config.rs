@@ -1,9 +1,10 @@
+use std::net::{IpAddr, Ipv4Addr};
+
 use anyhow::Context;
 use directories::ProjectDirs;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer};
 use serde_derive::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr};
 use tokio::fs;
 use tokio::sync::OnceCell;
 use tracing::info;
@@ -148,7 +149,8 @@ impl Config {
 
     /// panics if called multiple times
     fn init_logger(&self) {
-        use tracing_subscriber::{prelude::*, EnvFilter};
+        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::EnvFilter;
 
         let format = tracing_subscriber::fmt::layer()
             .without_time()

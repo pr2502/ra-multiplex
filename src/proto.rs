@@ -1,6 +1,7 @@
+use std::env;
+
 use anyhow::{ensure, Context, Result};
 use serde_derive::{Deserialize, Serialize};
-use std::env;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 #[derive(Serialize, Deserialize)]

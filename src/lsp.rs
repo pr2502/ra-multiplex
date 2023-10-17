@@ -28,15 +28,15 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
-use anyhow::{bail, ensure, Context, Result};
-use serde::Serialize;
-use serde_json::{Map, Value};
 use std::fmt::{self, Debug};
 use std::io::{self, ErrorKind};
 use std::str;
 use std::sync::Arc;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt};
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+
+use anyhow::{bail, ensure, Context, Result};
+use serde::Serialize;
+use serde_json::{Map, Value};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Every message begins with a HTTP-style header
 ///
