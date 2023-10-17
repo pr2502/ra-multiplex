@@ -6,12 +6,12 @@ use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::{select, task};
 use tracing::{debug, error, info, trace, Instrument};
 
 use crate::instance::{
-    InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
+    self, InitializeCache, InstanceKey, InstanceMap, RaInstance, INIT_REQUEST_ID,
 };
 use crate::lsp::jsonrpc::{Message, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
@@ -25,7 +25,11 @@ pub struct Client {
 
 impl Client {
     /// finds or spawns a rust-analyzer instance and connects the client
-    pub async fn process(socket: TcpStream, port: u16, registry: InstanceRegistry) -> Result<()> {
+    pub async fn process(
+        socket: TcpStream,
+        port: u16,
+        instance_map: Arc<Mutex<InstanceMap>>,
+    ) -> Result<()> {
         let (socket_read, socket_write) = socket.into_split();
         let mut socket_read = BufReader::new(socket_read);
 
@@ -43,7 +47,7 @@ impl Client {
         let mut client = Client {
             port,
             initialize_request_id: None,
-            instance: registry.get(&key).await?,
+            instance: instance::get(instance_map, &key).await?,
         };
 
         client.wait_for_initialize_request(&mut socket_read).await?;
