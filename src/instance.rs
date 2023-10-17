@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{Number, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, Mutex, Notify, RwLock};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
 use tracing::{debug, error, info, instrument, trace, warn, Instrument};
 
@@ -131,7 +131,7 @@ pub struct Instance {
     close: Notify,
     key: InstanceKey,
     pub init_cache: InitializeCache,
-    pub message_readers: RwLock<HashMap<u16, mpsc::Sender<Message>>>,
+    pub message_readers: Mutex<HashMap<u16, mpsc::Sender<Message>>>,
     pub message_writer: mpsc::Sender<Message>,
 
     /// Last time a message was sent to this instance
@@ -196,9 +196,7 @@ pub async fn get(
     }
 }
 
-/// Periodically checks for closed recv channels and removes them
-///
-/// If an instance has 0 connected clients and was idle for more than `timeout` it will be closed.
+/// Periodically checks for for idle language server instances
 #[instrument("garbage collector", skip_all)]
 async fn gc_task(
     instance_map: Arc<Mutex<InstanceMap>>,
@@ -210,9 +208,7 @@ async fn gc_task(
         interval.tick().await;
 
         for (key, instance) in instance_map.lock().await.map.iter() {
-            // Clean up closed senders
-            let mut message_readers = instance.message_readers.write().await;
-            message_readers.retain(|_port, sender| !sender.is_closed());
+            let message_readers = instance.message_readers.lock().await;
 
             let idle = instance.idle();
             debug!(path = ?key.workspace_root, idle, readers = message_readers.len(), "check instance");
@@ -258,147 +254,114 @@ impl Instance {
             close: Notify::new(),
             key: key.to_owned(),
             init_cache: InitializeCache::default(),
-            message_readers: RwLock::default(),
+            message_readers: Mutex::default(),
             message_writer,
             last_used: AtomicI64::new(utc_now()),
         });
 
-        instance.spawn_wait_task(child, instance_map);
-        instance.spawn_stderr_task(stderr);
-        instance.spawn_stdout_task(stdout);
-        instance.spawn_stdin_task(rx, stdin);
+        task::spawn(wait_task(instance.clone(), instance_map, child).in_current_span());
+        task::spawn(stderr_task(stderr).in_current_span());
+        task::spawn(stdout_task(instance.clone(), stdout).in_current_span());
+        task::spawn(stdin_task(rx, stdin).in_current_span());
 
         info!(server = ?key.server, args = ?key.args, "spawned");
 
         Ok(instance)
     }
+}
 
-    /// read errors from server stderr and log them
-    fn spawn_stderr_task(self: &Arc<Self>, stderr: ChildStderr) {
-        let mut stderr = BufReader::new(stderr);
-        let mut buffer = String::new();
+/// Read errors from langauge server stderr and log them
+async fn stderr_task(stderr: ChildStderr) {
+    let mut stderr = BufReader::new(stderr);
+    let mut buffer = String::new();
 
-        task::spawn(
-            async move {
-                loop {
-                    buffer.clear();
-                    match stderr.read_line(&mut buffer).await {
-                        Ok(0) => {
-                            // reached EOF
-                            debug!("stderr closed");
-                            break;
-                        }
-                        Ok(_) => {
-                            let line = buffer.trim_end(); // remove trailing '\n' or possibly '\r\n'
-                            error!(%line, "stderr");
-                        }
-                        Err(err) => {
-                            let err = anyhow::Error::from(err);
-                            error!(?err, "error reading from stderr");
-                        }
-                    }
-                }
+    loop {
+        buffer.clear();
+        match stderr.read_line(&mut buffer).await {
+            Ok(0) => {
+                // reached EOF
+                debug!("stderr closed");
+                break;
             }
-            .in_current_span(),
-        );
+            Ok(_) => {
+                let line = buffer.trim_end(); // remove trailing '\n' or possibly '\r\n'
+                error!(%line, "stderr");
+            }
+            Err(err) => {
+                let err = anyhow::Error::from(err);
+                error!(?err, "error reading from stderr");
+            }
+        }
     }
+}
 
-    /// read messages from server stdout and distribute them to client channels
-    fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout) {
-        let stdout = BufReader::new(stdout);
-        let instance = Arc::clone(self);
+/// Read messages sent by clients from a channel and write them into language server stdin
+async fn stdin_task(mut receiver: mpsc::Receiver<Message>, stdin: ChildStdin) {
+    let mut writer = LspWriter::new(stdin);
 
-        task::spawn(
-            async move {
-                match read_server_socket(stdout, &instance.message_readers, &instance.init_cache)
-                    .await
-                {
-                    Err(err) => error!(?err, "error reading from stdout"),
-                    Ok(_) => debug!("stdout closed"),
+    // Because we (stdin task) don't keep a reference to `self` it will be dropped when the
+    // child closes and all the clients disconnect including the sender and this receiver
+    // will not keep blocking (unlike in client input task)
+    while let Some(message) = receiver.recv().await {
+        trace!(?message, "-> server");
+        if let Err(err) = writer.write_message(&message).await {
+            match err.kind() {
+                // stdin is closed, no need to log an error
+                ErrorKind::BrokenPipe => {}
+                _ => {
+                    let err = anyhow::Error::from(err);
+                    error!(?err, "error writing to stdin");
                 }
             }
-            .in_current_span(),
-        );
+            break;
+        }
     }
+    debug!("stdin closed");
+}
 
-    /// read messages sent by clients from a channel and write them into server stdin
-    fn spawn_stdin_task(self: &Arc<Self>, rx: mpsc::Receiver<Message>, stdin: ChildStdin) {
-        let mut receiver = rx;
-        let mut writer = LspWriter::new(stdin);
-
-        task::spawn(
-            async move {
-                // because we (stdin task) don't keep a reference to `self` it will be dropped when the
-                // child closes and all the clients disconnect including the sender and this receiver
-                // will not keep blocking (unlike in client input task)
-                while let Some(message) = receiver.recv().await {
-                    trace!(?message, "-> server");
-                    if let Err(err) = writer.write_message(&message).await {
-                        match err.kind() {
-                            // stdin is closed, no need to log an error
-                            ErrorKind::BrokenPipe => {}
-                            _ => {
-                                let err = anyhow::Error::from(err);
-                                error!(?err, "error writing to stdin");
-                            }
-                        }
-                        break;
-                    }
-                }
-                debug!("stdin closed");
-            }
-            .in_current_span(),
-        );
-    }
-
-    /// Waits for child and logs when it exits
-    fn spawn_wait_task(self: &Arc<Self>, child: Child, instance_map: Arc<Mutex<InstanceMap>>) {
-        let key = self.key.clone();
-        let instance = Arc::clone(self);
-        task::spawn(
-            async move {
-                let mut child = child;
-                loop {
-                    select! {
-                        _ = instance.close.notified() => {
-                            if let Err(err) = child.start_kill() {
-                                error!(?err, "failed to close child");
-                            }
-                        }
-                        exit = child.wait() => {
-                            // Remove the closing instance from the map so new clients spawn their own instance
-                            instance_map.lock().await.map.remove(&key);
-
-                            // Disconnect all current clients
-                            //
-                            // We'll rely on the editor client to restart the ra-multiplex client,
-                            // start a new connection and we'll spawn another instance like we'd with
-                            // any other new client.
-                            let _ = instance.message_readers.write().await.drain();
-
-                            match exit {
-                                Ok(status) => {
-                                    #[cfg(unix)]
-                                    let signal = std::os::unix::process::ExitStatusExt::signal(&status);
-                                    #[cfg(not(unix))]
-                                    let signal = tracing::field::Empty;
-
-                                    error!(
-                                        success = status.success(),
-                                        code = status.code(),
-                                        signal,
-                                        "child exited",
-                                    );
-                                }
-                                Err(err) => error!(?err, "error waiting for child"),
-                            }
-                            break;
-                        }
-                    }
+/// Wait for child and logs when it exits
+async fn wait_task(
+    instance: Arc<Instance>,
+    instance_map: Arc<Mutex<InstanceMap>>,
+    mut child: Child,
+) {
+    loop {
+        select! {
+            _ = instance.close.notified() => {
+                if let Err(err) = child.start_kill() {
+                    error!(?err, "failed to close child");
                 }
             }
-            .in_current_span(),
-        );
+            exit = child.wait() => {
+                // Remove the closing instance from the map so new clients spawn their own instance
+                instance_map.lock().await.map.remove(&instance.key);
+
+                // Disconnect all current clients
+                //
+                // We'll rely on the editor client to restart the ra-multiplex client,
+                // start a new connection and we'll spawn another instance like we'd with
+                // any other new client.
+                instance.message_readers.lock().await.clear();
+
+                match exit {
+                    Ok(status) => {
+                        #[cfg(unix)]
+                        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+                        #[cfg(not(unix))]
+                        let signal = tracing::field::Empty;
+
+                        error!(
+                            success = status.success(),
+                            code = status.code(),
+                            signal,
+                            "child exited",
+                        );
+                    }
+                    Err(err) => error!(?err, "error waiting for child"),
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -418,38 +381,46 @@ fn parse_tagged_id(tagged: &Value) -> Result<(u16, Value)> {
     Ok((port, old_id))
 }
 
-async fn read_server_socket(
-    reader: BufReader<ChildStdout>,
-    senders: &RwLock<HashMap<u16, mpsc::Sender<Message>>>,
-    init_cache: &InitializeCache,
-) -> Result<()> {
-    let mut reader = LspReader::new(reader);
+/// Read messages from server stdout and distribute them to client channels
+async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
+    let mut reader = LspReader::new(BufReader::new(stdout));
 
-    while let Some(message) = reader.read_message().await? {
+    loop {
+        let message = match reader.read_message().await {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                debug!("stdout closed");
+                break;
+            }
+            Err(err) => {
+                error!(?err, "reading message");
+                continue;
+            }
+        };
         trace!(?message, "<- server");
 
+        let mut message_readers = instance.message_readers.lock().await;
         match message {
             Message::ResponseSuccess(res)
                 if res.id == Value::String(INIT_REQUEST_ID.to_owned()) =>
             {
-                // this is a response to the InitializeRequest, we need to process it
+                // This is a response to the InitializeRequest, we need to process it
                 // separately
                 debug!(message = ?Message::from(res.clone()), "recv InitializeRequest response");
-                init_cache
-                    .response
-                    .set(res)
-                    .await
-                    .ok() // throw away the Err(message), we don't need it and it doesn't implement std::error::Error
-                    .context("received multiple InitializeRequest responses from instance")?;
+                if instance.init_cache.response.set(res).await.is_err() {
+                    error!("received multiple InitializeRequest responses from instance")
+                }
             }
 
             Message::ResponseSuccess(mut res) => {
                 match parse_tagged_id(&res.id) {
                     Ok((port, id)) => {
                         res.id = id;
-                        if let Some(sender) = senders.read().await.get(&port) {
-                            // ignore closed channels
-                            let _ignore = sender.send(res.into()).await;
+                        if let Entry::Occupied(sender) = message_readers.entry(port) {
+                            if sender.get().send(res.into()).await.is_err() {
+                                // Remove closed channel.
+                                sender.remove_entry();
+                            }
                         } else {
                             warn!("no client");
                         }
@@ -464,16 +435,17 @@ async fn read_server_socket(
                 match parse_tagged_id(&res.id) {
                     Ok((port, id)) => {
                         res.id = id;
-                        if let Some(sender) = senders.read().await.get(&port) {
-                            // ignore closed channels
-                            let _ignore = sender.send(res.into()).await;
+                        if let Entry::Occupied(sender) = message_readers.entry(port) {
+                            if sender.get().send(res.into()).await.is_err() {
+                                // Remove closed channel.
+                                sender.remove_entry();
+                            }
                         } else {
                             warn!("no client");
                         }
                     }
                     Err(err) => {
                         warn!(?err, "invalid tagged id");
-                        continue;
                     }
                 };
             }
@@ -505,13 +477,17 @@ async fn read_server_socket(
             }
 
             Message::Notification(notif) => {
-                // notification messages without an id are sent to all clients
-                for sender in senders.read().await.values() {
-                    // ignore closed channels
-                    let _ignore = sender.send(notif.clone().into()).await;
+                // Notification are sent to all clients
+                let ports = message_readers.keys().cloned().collect::<Vec<_>>();
+                for port in ports {
+                    if let Entry::Occupied(sender) = message_readers.entry(port) {
+                        if sender.get().send(notif.clone().into()).await.is_err() {
+                            // Remove closed channel.
+                            sender.remove_entry();
+                        }
+                    }
                 }
             }
         }
     }
-    Ok(())
 }

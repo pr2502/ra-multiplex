@@ -121,7 +121,7 @@ impl Client {
         let (client_tx, client_rx) = mpsc::channel(64);
         self.instance
             .message_readers
-            .write()
+            .lock()
             .await
             .insert(self.port, client_tx.clone());
         (client_tx, client_rx)
