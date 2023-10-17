@@ -1,20 +1,20 @@
-use super::instance::{
-    InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
-};
-use anyhow::{bail, Context, Result};
-use ra_multiplex::{
-    lsp::{self, Message},
-    proto,
-};
-use serde_json::{json, Map, Value};
 use std::io::ErrorKind;
 use std::sync::Arc;
+
+use anyhow::{bail, Context, Result};
+use ra_multiplex::lsp::{self, Message};
+use ra_multiplex::proto;
+use serde_json::{json, Map, Value};
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::{select, task};
 use tracing::{debug, error, info, trace, Instrument};
+
+use super::instance::{
+    InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
+};
 
 pub struct Client {
     port: u16,

@@ -1,11 +1,3 @@
-use super::async_once_cell::AsyncOnceCell;
-use anyhow::{bail, Context, Result};
-use ra_multiplex::{
-    config::Config,
-    lsp::{self, Message},
-    proto,
-};
-use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -17,11 +9,19 @@ use std::str::{self, FromStr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+use ra_multiplex::config::Config;
+use ra_multiplex::lsp::{self, Message};
+use ra_multiplex::proto;
+use serde_json::{Number, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::{select, task, time};
 use tracing::{debug, error, info, info_span, instrument, trace, warn, Instrument};
+
+use super::async_once_cell::AsyncOnceCell;
 
 /// keeps track of the initialize/initialized handshake for an instance
 #[derive(Default)]
