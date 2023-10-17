@@ -13,7 +13,7 @@ use tracing::{debug, error, info, trace, Instrument};
 use crate::instance::{
     InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
 };
-use crate::lsp::transport::{LspReader, Message};
+use crate::lsp::transport::{LspReader, LspWriter, Message};
 use crate::proto;
 
 pub struct Client {
@@ -132,8 +132,9 @@ impl Client {
         &self,
         mut rx: mpsc::Receiver<Message>,
         mut close_rx: mpsc::Receiver<Message>,
-        mut socket_write: OwnedWriteHalf,
+        socket_write: OwnedWriteHalf,
     ) {
+        let mut writer = LspWriter::new(socket_write);
         task::spawn(
             async move {
                 // unlike the output task, here we first wait on the channel which is going to
@@ -150,7 +151,7 @@ impl Client {
                     message = close_rx.recv() => message,
                     message = rx.recv() => message,
                 } {
-                    if let Err(err) = message.to_writer(&mut socket_write).await {
+                    if let Err(err) = writer.write_message(message).await {
                         match err.kind() {
                             // ignore benign errors, treat as socket close
                             ErrorKind::BrokenPipe => {}
