@@ -13,7 +13,7 @@ use tracing::{debug, error, info, trace, Instrument};
 use crate::instance::{
     InitializeCache, InstanceKey, InstanceRegistry, RaInstance, INIT_REQUEST_ID,
 };
-use crate::lsp::{self, Message};
+use crate::lsp::transport::{LspReader, Message};
 use crate::proto;
 
 pub struct Client {
@@ -62,10 +62,9 @@ impl Client {
         &mut self,
         socket_read: &mut BufReader<OwnedReadHalf>,
     ) -> Result<()> {
+        let mut reader = LspReader::new(socket_read);
         let mut buffer = Vec::new();
-        let (mut json, _bytes) = lsp::read_message(&mut *socket_read, &mut buffer)
-            .await?
-            .context("channel closed")?;
+        let (mut json, _bytes) = reader.read_message().await?.context("channel closed")?;
         if !matches!(json.get("method"), Some(Value::String(method)) if method == "initialize") {
             bail!("first client message was not InitializeRequest");
         }
@@ -207,15 +206,16 @@ fn tag_id(port: u16, id: &Value) -> Result<String> {
 /// reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
 /// to the writer
 async fn read_client_socket(
-    mut socket_read: BufReader<OwnedReadHalf>,
+    socket_read: BufReader<OwnedReadHalf>,
     tx: mpsc::Sender<Message>,
     close_tx: mpsc::Sender<Message>,
     port: u16,
     init_cache: &InitializeCache,
 ) -> Result<()> {
+    let mut reader = LspReader::new(socket_read);
     let mut buffer = Vec::new();
 
-    while let Some((mut json, bytes)) = lsp::read_message(&mut socket_read, &mut buffer).await? {
+    while let Some((mut json, bytes)) = reader.read_message().await? {
         trace!(message = serde_json::to_string(&json).unwrap(), "client");
         if matches!(json.get("method"), Some(Value::String(method)) if method == "initialized") {
             // initialized notification can only be sent once per server
