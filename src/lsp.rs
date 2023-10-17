@@ -28,4 +28,5 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
+pub mod jsonrpc;
 pub mod transport;
