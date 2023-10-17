@@ -157,105 +157,106 @@ impl Drop for RaInstance {
     }
 }
 
-#[derive(Clone)]
-pub struct InstanceRegistry {
-    map: Arc<Mutex<HashMap<InstanceKey, Arc<RaInstance>>>>,
+pub struct InstanceMap {
+    map: HashMap<InstanceKey, Arc<RaInstance>>,
 }
 
-impl InstanceRegistry {
-    pub async fn new() -> Self {
-        let registry = InstanceRegistry {
-            map: Arc::default(),
-        };
-        registry.spawn_gc_task().await;
-        registry
+impl InstanceMap {
+    pub async fn new() -> Arc<Mutex<Self>> {
+        let instance_map = Arc::new(Mutex::new(InstanceMap {
+            map: HashMap::new(),
+        }));
+        spawn_gc_task(instance_map.clone()).await;
+        instance_map
     }
 }
 
-impl InstanceRegistry {
-    /// periodically checks for closed recv channels for every instance
-    ///
-    /// if an instance has 0 unclosed channels a timeout task is spawned to clean it up
-    async fn spawn_gc_task(&self) {
-        let config = Config::load_or_default().await;
-        let gc_interval = config.gc_interval.into();
-        let instance_timeout = config.instance_timeout.map(<_>::from);
-
-        let registry = self.clone();
-        let mut closed_ports = Vec::new();
-        task::spawn(
-            async move {
-                loop {
-                    time::sleep(Duration::from_secs(gc_interval)).await;
-
-                    for (key, instance) in registry.map.lock().await.iter() {
-                        for (port, sender) in instance.message_readers.read().await.iter() {
-                            if sender.is_closed() {
-                                closed_ports.push(*port);
-                            }
-                        }
-                        let mut message_readers = instance.message_readers.write().await;
-                        for port in closed_ports.drain(..) {
-                            message_readers.remove(&port);
-                        }
-                        if let Some(instance_timeout) = instance_timeout {
-                            if message_readers.is_empty() && instance.attempt_start_timeout() {
-                                registry.spawn_timeout_task(key, instance_timeout);
-                                info!(
-                                    pid = instance.pid,
-                                    path = ?key.workspace_root,
-                                    timeout = ?instance_timeout,
-                                    "no clients, close timeout started",
-                                );
-                            }
-                        } else {
-                            // if there is no instance timeout we don't need to spawn the timeout task
-                        }
-                    }
-                }
-            }
-            .instrument(info_span!("garbage collector")),
-        );
-    }
-
-    /// closes a rust-analyzer instance after a timeout if it still doesn't have any
-    fn spawn_timeout_task(&self, key: &InstanceKey, instance_timeout: u64) {
-        let registry = self.clone();
-        let key = key.to_owned();
-        task::spawn(
-            async move {
-                time::sleep(Duration::from_secs(instance_timeout)).await;
-
-                if let Some(instance) = registry.map.lock().await.get(&key) {
-                    if instance.message_readers.read().await.is_empty() {
-                        instance.close.notify_one();
-                    }
-                    instance.timeout_finished();
-                } else {
-                    // instance has already been deleted
-                }
-            }
-            .in_current_span(),
-        );
-    }
-
-    /// find or spawn an instance for a `project_root`
-    pub async fn get(&self, key: &InstanceKey) -> Result<Arc<RaInstance>> {
-        let mut map = self.map.lock().await;
-        match map.entry(key.to_owned()) {
-            Entry::Occupied(e) => Ok(Arc::clone(e.get())),
-            Entry::Vacant(e) => {
-                let new = RaInstance::spawn(key, self.clone()).context("spawn ra instance")?;
-                e.insert(Arc::clone(&new));
-                Ok(new)
-            }
+/// find or spawn an instance for a `project_root`
+pub async fn get(
+    instance_map: Arc<Mutex<InstanceMap>>,
+    key: &InstanceKey,
+) -> Result<Arc<RaInstance>> {
+    match instance_map.lock().await.map.entry(key.to_owned()) {
+        Entry::Occupied(e) => Ok(Arc::clone(e.get())),
+        Entry::Vacant(e) => {
+            let new = RaInstance::spawn(key, instance_map.clone()).context("spawn ra instance")?;
+            e.insert(Arc::clone(&new));
+            Ok(new)
         }
     }
 }
 
+/// periodically checks for closed recv channels for every instance
+///
+/// if an instance has 0 unclosed channels a timeout task is spawned to clean it up
+async fn spawn_gc_task(instance_map: Arc<Mutex<InstanceMap>>) {
+    let config = Config::load_or_default().await;
+    let gc_interval = config.gc_interval.into();
+    let instance_timeout = config.instance_timeout.map(<_>::from);
+
+    let mut closed_ports = Vec::new();
+    task::spawn(
+        async move {
+            loop {
+                time::sleep(Duration::from_secs(gc_interval)).await;
+
+                for (key, instance) in instance_map.lock().await.map.iter() {
+                    for (port, sender) in instance.message_readers.read().await.iter() {
+                        if sender.is_closed() {
+                            closed_ports.push(*port);
+                        }
+                    }
+                    let mut message_readers = instance.message_readers.write().await;
+                    for port in closed_ports.drain(..) {
+                        message_readers.remove(&port);
+                    }
+                    if let Some(instance_timeout) = instance_timeout {
+                        if message_readers.is_empty() && instance.attempt_start_timeout() {
+                            spawn_timeout_task(instance_map.clone(), key, instance_timeout);
+                            info!(
+                                pid = instance.pid,
+                                path = ?key.workspace_root,
+                                timeout = ?instance_timeout,
+                                "no clients, close timeout started",
+                            );
+                        }
+                    } else {
+                        // if there is no instance timeout we don't need to spawn the timeout task
+                    }
+                }
+            }
+        }
+        .instrument(info_span!("garbage collector")),
+    );
+}
+
+/// closes a rust-analyzer instance after a timeout if it still doesn't have any
+fn spawn_timeout_task(
+    instance_map: Arc<Mutex<InstanceMap>>,
+    key: &InstanceKey,
+    instance_timeout: u64,
+) {
+    let key = key.to_owned();
+    task::spawn(
+        async move {
+            time::sleep(Duration::from_secs(instance_timeout)).await;
+
+            if let Some(instance) = instance_map.lock().await.map.get(&key) {
+                if instance.message_readers.read().await.is_empty() {
+                    instance.close.notify_one();
+                }
+                instance.timeout_finished();
+            } else {
+                // instance has already been deleted
+            }
+        }
+        .in_current_span(),
+    );
+}
+
 impl RaInstance {
     #[instrument(name = "instance", fields(path = ?key.workspace_root), skip_all, parent = None)]
-    fn spawn(key: &InstanceKey, registry: InstanceRegistry) -> Result<Arc<RaInstance>> {
+    fn spawn(key: &InstanceKey, instance_map: Arc<Mutex<InstanceMap>>) -> Result<Arc<RaInstance>> {
         let mut child = Command::new(&key.server)
             .args(&key.args)
             .current_dir(&key.workspace_root)
@@ -288,7 +289,7 @@ impl RaInstance {
             message_writer,
         });
 
-        instance.spawn_wait_task(child, registry);
+        instance.spawn_wait_task(child, instance_map);
         instance.spawn_stderr_task(stderr);
         instance.spawn_stdout_task(stdout);
         instance.spawn_stdin_task(rx, stdin);
@@ -376,8 +377,8 @@ impl RaInstance {
         );
     }
 
-    /// waits for child and logs when it exits
-    fn spawn_wait_task(self: &Arc<Self>, child: Child, registry: InstanceRegistry) {
+    /// Waits for child and logs when it exits
+    fn spawn_wait_task(self: &Arc<Self>, child: Child, instance_map: Arc<Mutex<InstanceMap>>) {
         let key = self.key.clone();
         let instance = Arc::clone(self);
         task::spawn(
@@ -391,15 +392,14 @@ impl RaInstance {
                             }
                         }
                         exit = child.wait() => {
-                            // remove the closing instance from the registry so new clients spawn new
-                            // instance
-                            registry.map.lock().await.remove(&key);
+                            // Remove the closing instance from the map so new clients spawn their own instance
+                            instance_map.lock().await.map.remove(&key);
 
-                            // disconnect all current clients
+                            // Disconnect all current clients
                             //
-                            // we'll rely on the editor client to restart the ra-multiplex client,
+                            // We'll rely on the editor client to restart the ra-multiplex client,
                             // start a new connection and we'll spawn another instance like we'd with
-                            // any other new client
+                            // any other new client.
                             let _ = instance.message_readers.write().await.drain();
 
                             match exit {
