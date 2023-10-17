@@ -4,7 +4,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::str::{self, FromStr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,8 +13,8 @@ use serde_json::{Number, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
-use tokio::{select, task, time};
-use tracing::{debug, error, info, info_span, instrument, trace, warn, Instrument};
+use tokio::{select, task};
+use tracing::{debug, error, info, instrument, trace, warn, Instrument};
 
 use crate::async_once_cell::AsyncOnceCell;
 use crate::config::Config;
@@ -46,8 +46,6 @@ impl InitializeCache {
 
 /// dummy id used for the InitializeRequest and expected in the response
 pub const INIT_REQUEST_ID: &str = "ra-multiplex:initialize_request";
-
-pub type MessageReaders = RwLock<HashMap<u16, mpsc::Sender<Message>>>;
 
 /// specifies server configuration, if another server with the same configuration is requested we
 /// can reuse it
@@ -126,39 +124,46 @@ impl InstanceKey {
     }
 }
 
-pub struct RaInstance {
+/// Language server instance
+pub struct Instance {
     pid: u32,
     /// wakes up the wait_task and asks it to send SIGKILL to the instance
     close: Notify,
-    /// make sure only one timeout_task is running for an instance
-    timeout_running: AtomicBool,
     key: InstanceKey,
     pub init_cache: InitializeCache,
-    pub message_readers: MessageReaders,
+    pub message_readers: RwLock<HashMap<u16, mpsc::Sender<Message>>>,
     pub message_writer: mpsc::Sender<Message>,
+
+    /// Last time a message was sent to this instance
+    ///
+    /// Uses UTC unix timestamp ([utc_now] function)
+    last_used: AtomicI64,
 }
 
-impl RaInstance {
-    /// returns true if this is the first thread attempting to start a timeout task
-    fn attempt_start_timeout(&self) -> bool {
-        let already_running = self.timeout_running.swap(true, Ordering::SeqCst);
-        !already_running
+impl Instance {
+    /// Mark the instance as used
+    pub fn keep_alive(&self) {
+        self.last_used.store(utc_now(), Ordering::Relaxed);
     }
 
-    /// lets another timeout task start
-    fn timeout_finished(&self) {
-        self.timeout_running.store(false, Ordering::SeqCst);
+    /// How many seconds is the instance idle for
+    pub fn idle(&self) -> i64 {
+        i64::max(0, utc_now() - self.last_used.load(Ordering::Relaxed))
     }
 }
 
-impl Drop for RaInstance {
+fn utc_now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+impl Drop for Instance {
     fn drop(&mut self) {
         debug!("instance dropped");
     }
 }
 
 pub struct InstanceMap {
-    map: HashMap<InstanceKey, Arc<RaInstance>>,
+    map: HashMap<InstanceKey, Arc<Instance>>,
 }
 
 impl InstanceMap {
@@ -166,7 +171,12 @@ impl InstanceMap {
         let instance_map = Arc::new(Mutex::new(InstanceMap {
             map: HashMap::new(),
         }));
-        spawn_gc_task(instance_map.clone()).await;
+        let config = Config::load_or_default().await;
+        task::spawn(gc_task(
+            instance_map.clone(),
+            config.gc_interval,
+            config.instance_timeout,
+        ));
         instance_map
     }
 }
@@ -175,88 +185,52 @@ impl InstanceMap {
 pub async fn get(
     instance_map: Arc<Mutex<InstanceMap>>,
     key: &InstanceKey,
-) -> Result<Arc<RaInstance>> {
+) -> Result<Arc<Instance>> {
     match instance_map.lock().await.map.entry(key.to_owned()) {
         Entry::Occupied(e) => Ok(Arc::clone(e.get())),
         Entry::Vacant(e) => {
-            let new = RaInstance::spawn(key, instance_map.clone()).context("spawn ra instance")?;
+            let new = Instance::spawn(key, instance_map.clone()).context("spawn ra instance")?;
             e.insert(Arc::clone(&new));
             Ok(new)
         }
     }
 }
 
-/// periodically checks for closed recv channels for every instance
+/// Periodically checks for closed recv channels and removes them
 ///
-/// if an instance has 0 unclosed channels a timeout task is spawned to clean it up
-async fn spawn_gc_task(instance_map: Arc<Mutex<InstanceMap>>) {
-    let config = Config::load_or_default().await;
-    let gc_interval = config.gc_interval.into();
-    let instance_timeout = config.instance_timeout.map(<_>::from);
-
-    let mut closed_ports = Vec::new();
-    task::spawn(
-        async move {
-            loop {
-                time::sleep(Duration::from_secs(gc_interval)).await;
-
-                for (key, instance) in instance_map.lock().await.map.iter() {
-                    for (port, sender) in instance.message_readers.read().await.iter() {
-                        if sender.is_closed() {
-                            closed_ports.push(*port);
-                        }
-                    }
-                    let mut message_readers = instance.message_readers.write().await;
-                    for port in closed_ports.drain(..) {
-                        message_readers.remove(&port);
-                    }
-                    if let Some(instance_timeout) = instance_timeout {
-                        if message_readers.is_empty() && instance.attempt_start_timeout() {
-                            spawn_timeout_task(instance_map.clone(), key, instance_timeout);
-                            info!(
-                                pid = instance.pid,
-                                path = ?key.workspace_root,
-                                timeout = ?instance_timeout,
-                                "no clients, close timeout started",
-                            );
-                        }
-                    } else {
-                        // if there is no instance timeout we don't need to spawn the timeout task
-                    }
-                }
-            }
-        }
-        .instrument(info_span!("garbage collector")),
-    );
-}
-
-/// closes a rust-analyzer instance after a timeout if it still doesn't have any
-fn spawn_timeout_task(
+/// If an instance has 0 connected clients and was idle for more than `timeout` it will be closed.
+#[instrument("garbage collector", skip_all)]
+async fn gc_task(
     instance_map: Arc<Mutex<InstanceMap>>,
-    key: &InstanceKey,
-    instance_timeout: u64,
+    gc_interval: u32,
+    instance_timeout: Option<u32>,
 ) {
-    let key = key.to_owned();
-    task::spawn(
-        async move {
-            time::sleep(Duration::from_secs(instance_timeout)).await;
+    let mut interval = tokio::time::interval(Duration::from_secs(gc_interval.into()));
+    loop {
+        interval.tick().await;
 
-            if let Some(instance) = instance_map.lock().await.map.get(&key) {
-                if instance.message_readers.read().await.is_empty() {
+        for (key, instance) in instance_map.lock().await.map.iter() {
+            // Clean up closed senders
+            let mut message_readers = instance.message_readers.write().await;
+            message_readers.retain(|_port, sender| !sender.is_closed());
+
+            let idle = instance.idle();
+            debug!(path = ?key.workspace_root, idle, readers = message_readers.len(), "check instance");
+
+            if let Some(instance_timeout) = instance_timeout {
+                // Close timed out instance
+                if idle > i64::from(instance_timeout) && message_readers.is_empty() {
+                    info!(pid = instance.pid, path = ?key.workspace_root, idle, "instance timed out");
                     instance.close.notify_one();
                 }
-                instance.timeout_finished();
-            } else {
-                // instance has already been deleted
             }
         }
-        .in_current_span(),
-    );
+    }
 }
 
-impl RaInstance {
+impl Instance {
     #[instrument(name = "instance", fields(path = ?key.workspace_root), skip_all, parent = None)]
-    fn spawn(key: &InstanceKey, instance_map: Arc<Mutex<InstanceMap>>) -> Result<Arc<RaInstance>> {
+    fn spawn(key: &InstanceKey, instance_map: Arc<Mutex<InstanceMap>>) -> Result<Arc<Instance>> {
         let mut child = Command::new(&key.server)
             .args(&key.args)
             .current_dir(&key.workspace_root)
@@ -279,14 +253,14 @@ impl RaInstance {
         let stdin = child.stdin.take().unwrap();
         let (message_writer, rx) = mpsc::channel(64);
 
-        let instance = Arc::new(RaInstance {
+        let instance = Arc::new(Instance {
             pid,
             close: Notify::new(),
-            timeout_running: AtomicBool::new(false),
             key: key.to_owned(),
             init_cache: InitializeCache::default(),
-            message_readers: MessageReaders::default(),
+            message_readers: RwLock::default(),
             message_writer,
+            last_used: AtomicI64::new(utc_now()),
         });
 
         instance.spawn_wait_task(child, instance_map);
@@ -446,7 +420,7 @@ fn parse_tagged_id(tagged: &Value) -> Result<(u16, Value)> {
 
 async fn read_server_socket(
     reader: BufReader<ChildStdout>,
-    senders: &MessageReaders,
+    senders: &RwLock<HashMap<u16, mpsc::Sender<Message>>>,
     init_cache: &InitializeCache,
 ) -> Result<()> {
     let mut reader = LspReader::new(reader);
@@ -463,7 +437,7 @@ async fn read_server_socket(
                 debug!(message = ?Message::from(res.clone()), "recv InitializeRequest response");
                 init_cache
                     .response
-                    .set(res.into())
+                    .set(res)
                     .await
                     .ok() // throw away the Err(message), we don't need it and it doesn't implement std::error::Error
                     .context("received multiple InitializeRequest responses from instance")?;
