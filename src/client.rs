@@ -10,9 +10,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::{select, task};
 use tracing::{debug, error, info, trace, Instrument};
 
-use crate::instance::{
-    self, InitializeCache, InstanceKey, InstanceMap, RaInstance, INIT_REQUEST_ID,
-};
+use crate::instance::{self, Instance, InstanceKey, InstanceMap, INIT_REQUEST_ID};
 use crate::lsp::jsonrpc::{Message, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::proto;
@@ -20,7 +18,7 @@ use crate::proto;
 pub struct Client {
     port: u16,
     initialize_request_id: Option<Value>,
-    instance: Arc<RaInstance>,
+    instance: Arc<Instance>,
 }
 
 impl Client {
@@ -96,6 +94,7 @@ impl Client {
                 .send(req.into())
                 .await
                 .context("forward client request")?;
+            self.instance.keep_alive();
         } else {
             // initialize request was already sent for this instance, no need to send it again
         }
@@ -179,15 +178,7 @@ impl Client {
         let instance_tx = self.instance.message_writer.clone();
         task::spawn(
             async move {
-                match read_client_socket(
-                    socket_read,
-                    instance_tx,
-                    close_tx,
-                    port,
-                    &instance.init_cache,
-                )
-                .await
-                {
+                match read_client_socket(socket_read, instance_tx, close_tx, port, instance).await {
                     Ok(_) => debug!("client output closed"),
                     Err(err) => error!(?err, "error reading client output"),
                 }
@@ -212,7 +203,7 @@ async fn read_client_socket(
     tx: mpsc::Sender<Message>,
     close_tx: mpsc::Sender<Message>,
     port: u16,
-    init_cache: &InitializeCache,
+    instance: Arc<Instance>,
 ) -> Result<()> {
     let mut reader = LspReader::new(socket_read);
 
@@ -222,13 +213,14 @@ async fn read_client_socket(
         match message {
             Message::Request(mut req) if req.method == "initialized" => {
                 // initialized notification can only be sent once per server
-                if init_cache.attempt_send_notif() {
+                if instance.init_cache.attempt_send_notif() {
                     debug!("send InitializedNotification");
 
                     req.id = tag_id(port, &req.id)?.into();
                     if tx.send(req.into()).await.is_err() {
                         break;
                     }
+                    instance.keep_alive();
                 } else {
                     // we're not the first, skip processing the message further
                     debug!("skip InitializedNotification");
@@ -257,6 +249,7 @@ async fn read_client_socket(
                 if tx.send(req.into()).await.is_err() {
                     break;
                 }
+                instance.keep_alive();
             }
 
             Message::ResponseSuccess(_) | Message::ResponseError(_) => {
@@ -267,6 +260,7 @@ async fn read_client_socket(
                 if tx.send(notif.into()).await.is_err() {
                     break;
                 }
+                instance.keep_alive();
             }
         }
     }
