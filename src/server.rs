@@ -7,19 +7,15 @@
 //! cargo workspace and routing the messages through TCP to multiple clients.
 
 use anyhow::{Context, Result};
-use ra_multiplex::config::Config;
 use tokio::net::TcpListener;
 use tokio::task;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
-use crate::server::client::Client;
-use crate::server::instance::InstanceRegistry;
+use crate::client::Client;
+use crate::config::Config;
+use crate::instance::InstanceRegistry;
 
-mod async_once_cell;
-mod client;
-mod instance;
-
-pub async fn main() -> Result<()> {
+pub async fn run() -> Result<()> {
     let config = Config::load_or_default().await;
     let registry = InstanceRegistry::new().await;
 

@@ -1,9 +1,7 @@
 use std::env;
 
 use clap::{Args, Parser, Subcommand};
-
-mod client;
-mod server;
+use ra_multiplex::{proxy, server};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -45,11 +43,11 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Cmd::Server(_args)) => server::main().await,
-        Some(Cmd::Client(args)) => client::main(args.server_path, args.server_args).await,
+        Some(Cmd::Server(_args)) => server::run().await,
+        Some(Cmd::Client(args)) => proxy::run(args.server_path, args.server_args).await,
         None => {
             let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
-            client::main(server_path, vec![]).await
+            proxy::run(server_path, vec![]).await
         }
     }
 }
