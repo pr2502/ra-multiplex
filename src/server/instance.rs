@@ -8,7 +8,6 @@ use ra_multiplex::{
 use serde_json::{Number, Value};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -22,6 +21,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tokio::{select, task, time};
+use tracing::{debug, error, info, info_span, instrument, trace, warn, Instrument};
 
 /// keeps track of the initialize/initialized handshake for an instance
 #[derive(Default)]
@@ -60,6 +60,18 @@ pub struct InstanceKey {
 }
 
 impl InstanceKey {
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     pub async fn from_proto_init(proto_init: &proto::Init) -> InstanceKey {
         let config = Config::load_or_default().await;
 
@@ -142,9 +154,7 @@ impl RaInstance {
 
 impl Drop for RaInstance {
     fn drop(&mut self) {
-        let path = self.key.workspace_root.display();
-        let pid = self.pid;
-        log::debug!("[{path} {pid}] instance dropped");
+        debug!("instance dropped");
     }
 }
 
@@ -174,51 +184,60 @@ impl InstanceRegistry {
 
         let registry = self.clone();
         let mut closed_ports = Vec::new();
-        task::spawn(async move {
-            loop {
-                time::sleep(Duration::from_secs(gc_interval)).await;
+        task::spawn(
+            async move {
+                loop {
+                    time::sleep(Duration::from_secs(gc_interval)).await;
 
-                for (key, instance) in registry.map.lock().await.iter() {
-                    for (port, sender) in instance.message_readers.read().await.iter() {
-                        if sender.is_closed() {
-                            closed_ports.push(*port);
+                    for (key, instance) in registry.map.lock().await.iter() {
+                        for (port, sender) in instance.message_readers.read().await.iter() {
+                            if sender.is_closed() {
+                                closed_ports.push(*port);
+                            }
                         }
-                    }
-                    let mut message_readers = instance.message_readers.write().await;
-                    for port in closed_ports.drain(..) {
-                        message_readers.remove(&port);
-                    }
-                    if let Some(instance_timeout) = instance_timeout {
-                        if message_readers.is_empty() && instance.attempt_start_timeout() {
-                            registry.spawn_timeout_task(key, instance_timeout);
-                            let pid = instance.pid;
-                            let path = key.workspace_root.display();
-                            log::warn!("[{path} {pid}] no clients, close timeout started ({instance_timeout} seconds)");
+                        let mut message_readers = instance.message_readers.write().await;
+                        for port in closed_ports.drain(..) {
+                            message_readers.remove(&port);
                         }
-                    } else {
-                        // if there is no instance timeout we don't need to spawn the timeout task
+                        if let Some(instance_timeout) = instance_timeout {
+                            if message_readers.is_empty() && instance.attempt_start_timeout() {
+                                registry.spawn_timeout_task(key, instance_timeout);
+                                info!(
+                                    pid = instance.pid,
+                                    path = ?key.workspace_root,
+                                    timeout = ?instance_timeout,
+                                    "no clients, close timeout started",
+                                );
+                            }
+                        } else {
+                            // if there is no instance timeout we don't need to spawn the timeout task
+                        }
                     }
                 }
             }
-        });
+            .instrument(info_span!("garbage collector")),
+        );
     }
 
     /// closes a rust-analyzer instance after a timeout if it still doesn't have any
     fn spawn_timeout_task(&self, key: &InstanceKey, instance_timeout: u64) {
         let registry = self.clone();
         let key = key.to_owned();
-        task::spawn(async move {
-            time::sleep(Duration::from_secs(instance_timeout)).await;
+        task::spawn(
+            async move {
+                time::sleep(Duration::from_secs(instance_timeout)).await;
 
-            if let Some(instance) = registry.map.lock().await.get(&key) {
-                if instance.message_readers.read().await.is_empty() {
-                    instance.close.notify_one();
+                if let Some(instance) = registry.map.lock().await.get(&key) {
+                    if instance.message_readers.read().await.is_empty() {
+                        instance.close.notify_one();
+                    }
+                    instance.timeout_finished();
+                } else {
+                    // instance has already been deleted
                 }
-                instance.timeout_finished();
-            } else {
-                // instance has already been deleted
             }
-        });
+            .in_current_span(),
+        );
     }
 
     /// find or spawn an instance for a `project_root`
@@ -236,6 +255,7 @@ impl InstanceRegistry {
 }
 
 impl RaInstance {
+    #[instrument(name = "instance", fields(path = ?key.workspace_root), skip_all, parent = None)]
     fn spawn(key: &InstanceKey, registry: InstanceRegistry) -> Result<Arc<RaInstance>> {
         let mut child = Command::new(&key.server)
             .args(&key.args)
@@ -274,139 +294,137 @@ impl RaInstance {
         instance.spawn_stdout_task(stdout);
         instance.spawn_stdin_task(rx, stdin);
 
-        let path = key.workspace_root.display();
-        log::info!("[{path} {pid}] spawned {server}", server = &key.server);
+        info!(server = ?key.server, args = ?key.args, "spawned");
 
         Ok(instance)
     }
 
     /// read errors from server stderr and log them
     fn spawn_stderr_task(self: &Arc<Self>, stderr: ChildStderr) {
-        let pid = self.pid;
-        let path = self.key.workspace_root.display().to_string();
         let mut stderr = BufReader::new(stderr);
         let mut buffer = String::new();
 
-        task::spawn(async move {
-            loop {
-                buffer.clear();
-                match stderr.read_line(&mut buffer).await {
-                    Ok(0) => {
-                        // reached EOF
-                        log::debug!("[{path} {pid}] instance stderr closed");
-                        break;
-                    }
-                    Ok(_) => {
-                        let line = buffer.trim_end(); // remove trailing '\n' or possibly '\r\n'
-                        log::error!("[{path} {pid}] {line}");
-                    }
-                    Err(err) => {
-                        let err = anyhow::Error::from(err);
-                        log::error!("[{path} {pid}] error reading from stderr: {err:?}");
+        task::spawn(
+            async move {
+                loop {
+                    buffer.clear();
+                    match stderr.read_line(&mut buffer).await {
+                        Ok(0) => {
+                            // reached EOF
+                            debug!("stderr closed");
+                            break;
+                        }
+                        Ok(_) => {
+                            let line = buffer.trim_end(); // remove trailing '\n' or possibly '\r\n'
+                            error!(%line, "stderr");
+                        }
+                        Err(err) => {
+                            let err = anyhow::Error::from(err);
+                            error!(?err, "error reading from stderr");
+                        }
                     }
                 }
             }
-        });
+            .in_current_span(),
+        );
     }
 
     /// read messages from server stdout and distribute them to client channels
     fn spawn_stdout_task(self: &Arc<Self>, stdout: ChildStdout) {
         let stdout = BufReader::new(stdout);
         let instance = Arc::clone(self);
-        let pid = self.pid;
-        let path = instance.key.workspace_root.display().to_string();
 
-        task::spawn(async move {
-            match read_server_socket(stdout, &instance.message_readers, &instance.init_cache).await
-            {
-                Err(err) => log::error!("[{path} {pid}] error reading from stdout: {err:?}"),
-                Ok(_) => log::debug!("[{path} {pid}] instance stdout closed"),
+        task::spawn(
+            async move {
+                match read_server_socket(stdout, &instance.message_readers, &instance.init_cache)
+                    .await
+                {
+                    Err(err) => error!(?err, "error reading from stdout"),
+                    Ok(_) => debug!("stdout closed"),
+                }
             }
-        });
+            .in_current_span(),
+        );
     }
 
     /// read messages sent by clients from a channel and write them into server stdin
     fn spawn_stdin_task(self: &Arc<Self>, rx: mpsc::Receiver<Message>, stdin: ChildStdin) {
-        let pid = self.pid;
-        let path = self.key.workspace_root.display().to_string();
         let mut receiver = rx;
         let mut stdin = stdin;
 
-        task::spawn(async move {
-            // because we (stdin task) don't keep a reference to `self` it will be dropped when the
-            // child closes and all the clients disconnect including the sender and this receiver
-            // will not keep blocking (unlike in client input task)
-            while let Some(message) = receiver.recv().await {
-                if let Err(err) = message.to_writer(&mut stdin).await {
-                    match err.kind() {
-                        // stdin is closed, no need to log an error
-                        ErrorKind::BrokenPipe => {}
-                        _ => {
-                            let err = anyhow::Error::from(err);
-                            log::error!("[{path} {pid}] error writing to stdin: {err:?}");
+        task::spawn(
+            async move {
+                // because we (stdin task) don't keep a reference to `self` it will be dropped when the
+                // child closes and all the clients disconnect including the sender and this receiver
+                // will not keep blocking (unlike in client input task)
+                while let Some(message) = receiver.recv().await {
+                    if let Err(err) = message.to_writer(&mut stdin).await {
+                        match err.kind() {
+                            // stdin is closed, no need to log an error
+                            ErrorKind::BrokenPipe => {}
+                            _ => {
+                                let err = anyhow::Error::from(err);
+                                error!(?err, "error writing to stdin");
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
+                debug!("stdin closed");
             }
-            log::debug!("[{path} {pid}] instance stdin closed");
-        });
+            .in_current_span(),
+        );
     }
 
     /// waits for child and logs when it exits
     fn spawn_wait_task(self: &Arc<Self>, child: Child, registry: InstanceRegistry) {
         let key = self.key.clone();
-        let pid = self.pid;
-        let path = key.workspace_root.display().to_string();
         let instance = Arc::clone(self);
-        task::spawn(async move {
-            let mut child = child;
-            loop {
-                select! {
-                    _ = instance.close.notified() => {
-                        if let Err(err) = child.start_kill() {
-                            log::error!("[{path} {pid}] failed to close rust-analyzer: {err}");
-                        }
-                    }
-                    exit = child.wait() => {
-                        // remove the closing instance from the registry so new clients spawn new
-                        // instance
-                        registry.map.lock().await.remove(&key);
-
-                        // disconnect all current clients
-                        //
-                        // we'll rely on the editor client to restart the ra-multiplex client,
-                        // start a new connection and we'll spawn another instance like we'd with
-                        // any other new client
-                        let _ = instance.message_readers.write().await.drain();
-
-                        match exit {
-                            Ok(status) => {
-                                let success = if status.success() {
-                                    "successfully"
-                                } else {
-                                    "with error"
-                                };
-                                let mut details = String::new();
-                                if let Some(code) = status.code() {
-                                    details.write_fmt(format_args!(" code {code}")).unwrap();
-                                }
-                                #[cfg(unix)]
-                                {
-                                    if let Some(signal) = status.signal() {
-                                        details.write_fmt(format_args!(" signal {signal}")).unwrap();
-                                    }
-                                }
-                                let pid = instance.pid;
-                                log::error!("[{path} {pid}] child exited {success}{details}");
+        task::spawn(
+            async move {
+                let mut child = child;
+                loop {
+                    select! {
+                        _ = instance.close.notified() => {
+                            if let Err(err) = child.start_kill() {
+                                error!(?err, "failed to close child");
                             }
-                            Err(err) => log::error!("[{path} {pid}] error waiting for child: {err}"),
                         }
-                        break;
+                        exit = child.wait() => {
+                            // remove the closing instance from the registry so new clients spawn new
+                            // instance
+                            registry.map.lock().await.remove(&key);
+
+                            // disconnect all current clients
+                            //
+                            // we'll rely on the editor client to restart the ra-multiplex client,
+                            // start a new connection and we'll spawn another instance like we'd with
+                            // any other new client
+                            let _ = instance.message_readers.write().await.drain();
+
+                            match exit {
+                                Ok(status) => {
+                                    #[cfg(unix)]
+                                    let signal = status.signal();
+                                    #[cfg(not(unix))]
+                                    let signal = tracing::field::Empty;
+
+                                    error!(
+                                        success = status.success(),
+                                        code = status.code(),
+                                        signal,
+                                        "child exited",
+                                    );
+                                }
+                                Err(err) => error!(?err, "error waiting for child"),
+                            }
+                            break;
+                        }
                     }
                 }
             }
-        });
+            .in_current_span(),
+        );
     }
 }
 
@@ -430,7 +448,7 @@ async fn read_server_socket(
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut reader, &mut buffer).await? {
-        log::trace!("{}", Value::Object(json.clone()));
+        trace!(message = serde_json::to_string(&json).unwrap(), "server");
 
         if let Some(id) = json.get("id") {
             // we tagged the request id so we expect to only receive tagged responses
@@ -438,7 +456,7 @@ async fn read_server_socket(
                 Value::String(string) if string == INIT_REQUEST_ID => {
                     // this is a response to the InitializeRequest, we need to process it
                     // separately
-                    log::debug!("recv InitializeRequest response");
+                    debug!("recv InitializeRequest response");
                     init_cache
                         .response
                         .set(Message::from_bytes(bytes))
@@ -449,7 +467,10 @@ async fn read_server_socket(
                 }
                 Value::String(string) => string,
                 _ => {
-                    log::debug!("response to no request {}", Value::Object(json));
+                    debug!(
+                        message = serde_json::to_string(&json).unwrap(),
+                        "response to no request",
+                    );
                     // FIXME uncommenting this crashes rust-analyzer, presumably because the client
                     // then sends a confusing response or something? i'm guessing that the response
                     // id gets tagged with port but rust-analyzer expects to know the id because
@@ -479,7 +500,7 @@ async fn read_server_socket(
             let (port, old_id) = match parse_tagged_id(tagged_id) {
                 Ok(ok) => ok,
                 Err(err) => {
-                    log::warn!("invalid tagged id {err:?}");
+                    warn!(?err, "invalid tagged id");
                     continue;
                 }
             };
@@ -491,7 +512,7 @@ async fn read_server_socket(
                 // ignore closed channels
                 let _ignore = sender.send(message).await;
             } else {
-                log::warn!("[{port}] no client");
+                warn!("no client");
             }
         } else {
             // notification messages without an id are sent to all clients

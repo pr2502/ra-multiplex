@@ -14,6 +14,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::{select, task};
+use tracing::{debug, error, info, trace, Instrument};
 
 pub struct Client {
     port: u16,
@@ -31,7 +32,12 @@ impl Client {
         let proto_init = proto::Init::from_reader(&mut buffer, &mut socket_read).await?;
 
         let key = InstanceKey::from_proto_init(&proto_init).await;
-        log::debug!("client configured {key:?}");
+        debug!(
+            path = ?key.workspace_root(),
+            server = ?key.server(),
+            args = ?key.args(),
+            "client configured",
+        );
 
         let mut client = Client {
             port,
@@ -57,14 +63,13 @@ impl Client {
         socket_read: &mut BufReader<OwnedReadHalf>,
     ) -> Result<()> {
         let mut buffer = Vec::new();
-        let port = self.port;
         let (mut json, _bytes) = lsp::read_message(&mut *socket_read, &mut buffer)
             .await?
             .context("channel closed")?;
         if !matches!(json.get("method"), Some(Value::String(method)) if method == "initialize") {
             bail!("first client message was not InitializeRequest");
         }
-        log::debug!("[{port}] recv InitializeRequest");
+        debug!("recv InitializeRequest");
         // this is an initialize request, it's special because it cannot be sent twice or
         // rust-analyzer will crash.
 
@@ -96,7 +101,6 @@ impl Client {
         tx: mpsc::Sender<Message>,
         buffer: &mut Vec<u8>,
     ) -> Result<()> {
-        let port = self.port;
         // parse the cached message and restore the `id` to the value this client expects
         let response = self.instance.init_cache.response.get().await;
         let mut json: Map<String, Value> = serde_json::from_slice(response.as_bytes())
@@ -108,7 +112,7 @@ impl Client {
                 .expect("BUG: need to wait_for_initialize_request first"),
         );
         let message = Message::from_json(&json, buffer);
-        log::debug!("[{port}] send response to InitializeRequest");
+        debug!("send response to InitializeRequest");
         tx.send(message).await.context("send initialize response")?;
         Ok(())
     }
@@ -131,35 +135,37 @@ impl Client {
         mut close_rx: mpsc::Receiver<Message>,
         mut socket_write: OwnedWriteHalf,
     ) {
-        let port = self.port;
-        task::spawn(async move {
-            // unlike the output task, here we first wait on the channel which is going to
-            // block until the rust-analyzer server sends a notification, however if we're the last
-            // client and have just closed the server is unlikely to send any. this results in the
-            // last client often falsely hanging while the gc task depends on the input channels being
-            // closed to detect a disconnected client.
-            //
-            // when a client sends a shutdown request we receive a message on the close_rx, send
-            // the reply and close the connection. if no shutdown request was received but the
-            // client closed close_rx channel will be dropped (unlike the normal rx channel which
-            // is shared) and the connection will close without sending any response.
-            while let Some(message) = select! {
-                message = close_rx.recv() => message,
-                message = rx.recv() => message,
-            } {
-                if let Err(err) = message.to_writer(&mut socket_write).await {
-                    match err.kind() {
-                        // ignore benign errors, treat as socket close
-                        ErrorKind::BrokenPipe => {}
-                        // report fatal errors
-                        _ => log::error!("[{port}] error writing client input: {err}"),
+        task::spawn(
+            async move {
+                // unlike the output task, here we first wait on the channel which is going to
+                // block until the rust-analyzer server sends a notification, however if we're the last
+                // client and have just closed the server is unlikely to send any. this results in the
+                // last client often falsely hanging while the gc task depends on the input channels being
+                // closed to detect a disconnected client.
+                //
+                // when a client sends a shutdown request we receive a message on the close_rx, send
+                // the reply and close the connection. if no shutdown request was received but the
+                // client closed close_rx channel will be dropped (unlike the normal rx channel which
+                // is shared) and the connection will close without sending any response.
+                while let Some(message) = select! {
+                    message = close_rx.recv() => message,
+                    message = rx.recv() => message,
+                } {
+                    if let Err(err) = message.to_writer(&mut socket_write).await {
+                        match err.kind() {
+                            // ignore benign errors, treat as socket close
+                            ErrorKind::BrokenPipe => {}
+                            // report fatal errors
+                            _ => error!(?err, "error writing client input: {err}"),
+                        }
+                        break; // break on any error
                     }
-                    break; // break on any error
                 }
+                debug!("client input closed");
+                info!("client disconnected");
             }
-            log::debug!("[{port}] client input closed");
-            log::info!("[{port}] client disconnected");
-        });
+            .in_current_span(),
+        );
     }
 
     fn spawn_output_task(
@@ -170,20 +176,23 @@ impl Client {
         let port = self.port;
         let instance = Arc::clone(&self.instance);
         let instance_tx = self.instance.message_writer.clone();
-        task::spawn(async move {
-            match read_client_socket(
-                socket_read,
-                instance_tx,
-                close_tx,
-                port,
-                &instance.init_cache,
-            )
-            .await
-            {
-                Ok(_) => log::debug!("[{port}] client output closed"),
-                Err(err) => log::error!("[{port}] error reading client output: {err:?}"),
+        task::spawn(
+            async move {
+                match read_client_socket(
+                    socket_read,
+                    instance_tx,
+                    close_tx,
+                    port,
+                    &instance.init_cache,
+                )
+                .await
+                {
+                    Ok(_) => debug!("client output closed"),
+                    Err(err) => error!(?err, "error reading client output"),
+                }
             }
-        });
+            .in_current_span(),
+        );
     }
 }
 
@@ -207,13 +216,14 @@ async fn read_client_socket(
     let mut buffer = Vec::new();
 
     while let Some((mut json, bytes)) = lsp::read_message(&mut socket_read, &mut buffer).await? {
+        trace!(message = serde_json::to_string(&json).unwrap(), "client");
         if matches!(json.get("method"), Some(Value::String(method)) if method == "initialized") {
             // initialized notification can only be sent once per server
             if init_cache.attempt_send_notif() {
-                log::debug!("[{port}] send InitializedNotification");
+                debug!("send InitializedNotification");
             } else {
                 // we're not the first, skip processing the message further
-                log::debug!("[{port}] skip InitializedNotification");
+                debug!("skip InitializedNotification");
                 continue;
             }
         }
@@ -222,7 +232,7 @@ async fn read_client_socket(
             // instead we disconnect this client to prevent the editor hanging
             // see <https://github.com/pr2502/ra-multiplex/issues/5>
             if let Some(shutdown_request_id) = json.get("id") {
-                log::info!("[{port}] client sent shutdown request, sending a response and closing connection");
+                info!("client sent shutdown request, sending a response and closing connection");
                 // <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#shutdown>
                 let message = Message::from_json(
                     &json!({
