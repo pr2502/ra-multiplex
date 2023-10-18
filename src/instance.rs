@@ -16,18 +16,18 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
 use tracing::{debug, error, info, instrument, trace, warn, Instrument};
 
-use crate::async_once_cell::AsyncOnceCell;
 use crate::config::Config;
 use crate::lsp::jsonrpc::{Message, ResponseSuccess};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::proto;
+use crate::wait_cell::WaitCell;
 
 /// keeps track of the initialize/initialized handshake for an instance
 #[derive(Default)]
 pub struct InitializeCache {
     request_sent: AtomicBool,
     notif_sent: AtomicBool,
-    pub response: AsyncOnceCell<ResponseSuccess>,
+    pub response: WaitCell<ResponseSuccess>,
 }
 
 impl InitializeCache {
@@ -44,8 +44,8 @@ impl InitializeCache {
     }
 }
 
-/// dummy id used for the InitializeRequest and expected in the response
-pub const INIT_REQUEST_ID: &str = "ra-multiplex:initialize_request";
+/// Dummy id used for the InitializeRequest and expected in the response
+pub const INIT_REQUEST_ID: &str = "lspmux:initialize_request";
 
 /// specifies server configuration, if another server with the same configuration is requested we
 /// can reuse it
@@ -208,7 +208,15 @@ async fn gc_task(
         interval.tick().await;
 
         for (key, instance) in instance_map.lock().await.map.iter() {
-            let message_readers = instance.message_readers.lock().await;
+            let mut message_readers = instance.message_readers.lock().await;
+
+            // Remove closed senders
+            //
+            // We have to check here because otherwise the senders only get
+            // removed when a message is sent to them which might leave them
+            // hanging forever if the language server is quiet and cause the
+            // GC to never trigger.
+            message_readers.retain(|_port, sender| !sender.is_closed());
 
             let idle = instance.idle();
             debug!(path = ?key.workspace_root, idle, readers = message_readers.len(), "check instance");
@@ -365,20 +373,28 @@ async fn wait_task(
     }
 }
 
-fn parse_tagged_id(tagged: &Value) -> Result<(u16, Value)> {
-    let Value::String(tagged) = tagged else {
-        bail!("tagged id must be a String found `{tagged:?}`");
-    };
+fn parse_tagged_id(tagged: &Value) -> Option<(u16, Value)> {
+    match (|| -> Result<(u16, Value)> {
+        let Value::String(tagged) = tagged else {
+            bail!("tagged id must be a String found `{tagged:?}`");
+        };
 
-    let (port, rest) = tagged.split_once(':').context("missing first `:`")?;
-    let port = u16::from_str(port)?;
-    let (value_type, old_id) = rest.split_once(':').context("missing second `:`")?;
-    let old_id = match value_type {
-        "n" => Value::Number(Number::from_str(old_id)?),
-        "s" => Value::String(old_id.to_owned()),
-        _ => bail!("invalid tag type `{value_type}`"),
-    };
-    Ok((port, old_id))
+        let (port, rest) = tagged.split_once(':').context("missing first `:`")?;
+        let port = u16::from_str(port)?;
+        let (value_type, old_id) = rest.split_once(':').context("missing second `:`")?;
+        let old_id = match value_type {
+            "n" => Value::Number(Number::from_str(old_id)?),
+            "s" => Value::String(old_id.to_owned()),
+            _ => bail!("invalid tag type `{value_type}`"),
+        };
+        Ok((port, old_id))
+    })() {
+        Ok(parsed) => Some(parsed),
+        Err(err) => {
+            warn!(?err, "invalid tagged id");
+            None
+        }
+    }
 }
 
 /// Read messages from server stdout and distribute them to client channels
@@ -399,7 +415,8 @@ async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
         };
         trace!(?message, "<- server");
 
-        let mut message_readers = instance.message_readers.lock().await;
+        // Locked after we have a message to send
+        let message_readers = instance.message_readers.lock().await;
         match message {
             Message::ResponseSuccess(res)
                 if res.id == Value::String(INIT_REQUEST_ID.to_owned()) =>
@@ -413,39 +430,23 @@ async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
             }
 
             Message::ResponseSuccess(mut res) => {
-                match parse_tagged_id(&res.id) {
-                    Ok((port, id)) => {
-                        res.id = id;
-                        if let Entry::Occupied(sender) = message_readers.entry(port) {
-                            if sender.get().send(res.into()).await.is_err() {
-                                // Remove closed channel.
-                                sender.remove_entry();
-                            }
-                        } else {
-                            warn!("no client");
-                        }
-                    }
-                    Err(err) => {
-                        warn!(?err, "invalid tagged id");
+                if let Some((port, id)) = parse_tagged_id(&res.id) {
+                    res.id = id;
+                    if let Some(sender) = message_readers.get(&port) {
+                        let _ignore = sender.send(res.into()).await;
+                    } else {
+                        debug!("no client");
                     }
                 };
             }
 
             Message::ResponseError(mut res) => {
-                match parse_tagged_id(&res.id) {
-                    Ok((port, id)) => {
-                        res.id = id;
-                        if let Entry::Occupied(sender) = message_readers.entry(port) {
-                            if sender.get().send(res.into()).await.is_err() {
-                                // Remove closed channel.
-                                sender.remove_entry();
-                            }
-                        } else {
-                            warn!("no client");
-                        }
-                    }
-                    Err(err) => {
-                        warn!(?err, "invalid tagged id");
+                if let Some((port, id)) = parse_tagged_id(&res.id) {
+                    res.id = id;
+                    if let Some(sender) = message_readers.get(&port) {
+                        let _ignore = sender.send(res.into()).await;
+                    } else {
+                        debug!("no client");
                     }
                 };
             }
@@ -478,14 +479,8 @@ async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
 
             Message::Notification(notif) => {
                 // Notification are sent to all clients
-                let ports = message_readers.keys().cloned().collect::<Vec<_>>();
-                for port in ports {
-                    if let Entry::Occupied(sender) = message_readers.entry(port) {
-                        if sender.get().send(notif.clone().into()).await.is_err() {
-                            // Remove closed channel.
-                            sender.remove_entry();
-                        }
-                    }
+                for sender in message_readers.values() {
+                    let _ignore = sender.send(notif.clone().into()).await;
                 }
             }
         }
