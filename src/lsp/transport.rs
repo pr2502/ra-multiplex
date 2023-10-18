@@ -3,6 +3,7 @@ use std::str;
 
 use anyhow::{bail, ensure, Context, Result};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tracing::trace;
 
 use crate::lsp::jsonrpc::Message;
 
@@ -10,6 +11,7 @@ pub struct LspReader<R> {
     reader: R,
     batch: Vec<Message>,
     buffer: Vec<u8>,
+    tag: &'static str,
 }
 
 /// Every message begins with a HTTP-style header
@@ -32,11 +34,12 @@ impl<R> LspReader<R>
 where
     R: AsyncBufRead + Unpin,
 {
-    pub fn new(reader: R) -> Self {
+    pub fn new(reader: R, tag: &'static str) -> Self {
         LspReader {
             reader,
             batch: Vec::new(),
             buffer: Vec::with_capacity(1024),
+            tag,
         }
     }
 
@@ -103,6 +106,7 @@ where
     pub async fn read_message(&mut self) -> Result<Option<Message>> {
         // return pending messages until the last batch is drained
         if let Some(pending) = self.batch.pop() {
+            trace!(message = ?pending, "<- {}", self.tag);
             return Ok(Some(pending));
         }
 
@@ -141,11 +145,13 @@ where
             // we're popping the messages from the end of the vec
             self.batch.reverse();
             let message = self.batch.pop().context("received an empty batch")?;
+            trace!(?message, "<- {}", self.tag);
             Ok(Some(message))
         } else {
             let message = serde_json::from_str(body)
                 .with_context(|| format!("parsing body `{body}`"))
                 .context("parsing LSP message")?;
+            trace!(?message, "<- {}", self.tag);
             Ok(Some(message))
         }
     }
@@ -154,21 +160,25 @@ where
 pub struct LspWriter<W> {
     writer: W,
     buffer: Vec<u8>,
+    tag: &'static str,
 }
 
 impl<W> LspWriter<W>
 where
     W: AsyncWrite + Unpin,
 {
-    pub fn new(writer: W) -> Self {
+    pub fn new(writer: W, tag: &'static str) -> Self {
         LspWriter {
             writer,
             buffer: Vec::with_capacity(1024),
+            tag,
         }
     }
 
     /// serialize LSP message into a writer, prepending the appropriate content-length header
     pub async fn write_message(&mut self, message: &Message) -> io::Result<()> {
+        trace!(?message, "-> {}", self.tag);
+
         self.buffer.clear();
         serde_json::to_writer(&mut self.buffer, message).expect("BUG: invalid message");
 

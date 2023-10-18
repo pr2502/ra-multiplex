@@ -1,20 +1,19 @@
 use std::io::ErrorKind;
-use std::mem;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::{select, task};
-use tracing::{debug, error, info, trace, Instrument};
+use tracing::{debug, error, info, Instrument};
 
-use crate::instance::{self, Instance, InstanceKey, InstanceMap, INIT_REQUEST_ID};
+use crate::instance::{self, Instance, InstanceKey, InstanceMap};
 use crate::lsp::jsonrpc::{Message, RequestId, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::proto;
+use crate::lsp::InitializeParams;
 
 /// Finds or spawns a language server instance and connects the client
 pub async fn process(
@@ -23,102 +22,101 @@ pub async fn process(
     instance_map: Arc<Mutex<InstanceMap>>,
 ) -> Result<()> {
     let (socket_read, socket_write) = socket.into_split();
-    let mut socket_read = BufReader::new(socket_read);
+    let mut reader = LspReader::new(BufReader::new(socket_read), "client");
+    let mut writer = LspWriter::new(socket_write, "client");
 
-    let mut buffer = Vec::new();
-    let proto_init = proto::Init::from_reader(&mut buffer, &mut socket_read).await?;
-
-    let key = InstanceKey::from_proto_init(&proto_init).await;
-    debug!(
-        path = ?key.workspace_root(),
-        server = ?key.server(),
-        args = ?key.args(),
-        "client configured",
-    );
-
-    let instance = instance::get(instance_map, &key).await?;
-
-    let initialize_request_id = wait_for_initialize_request(&instance, &mut socket_read).await?;
-
-    let (client_tx, client_rx) = register_client_with_instance(port, &instance).await;
-    let (close_tx, close_rx) = mpsc::channel(1);
-    task::spawn(input_task(client_rx, close_rx, socket_write).in_current_span());
-    task::spawn(output_task(port, instance.clone(), socket_read, close_tx).in_current_span());
-
-    wait_for_initialize_response(initialize_request_id, &instance, client_tx).await?;
-    Ok(())
-}
-
-async fn wait_for_initialize_request(
-    instance: &Instance,
-    socket_read: &mut BufReader<OwnedReadHalf>,
-) -> Result<RequestId> {
-    let mut reader = LspReader::new(socket_read);
-
-    let message = reader.read_message().await?.context("channel closed")?;
-    trace!(?message, "<- client");
-
-    let mut req = match message {
-        Message::Request(req) if req.method == "initialize" => {
-            debug!(message = ?Message::from(req.clone()), "recv InitializeRequest");
-            req
-        }
-        _ => bail!("first client message was not InitializeRequest"),
+    // Read the first client message, this must be `initialize` request.
+    let req = match reader
+        .read_message()
+        .await
+        .context("receive `initialize` request")?
+        .context("channel closed")?
+    {
+        Message::Request(req) if req.method == "initialize" => req,
+        _ => bail!("first client message was not `initialize` request"),
     };
+    let mut init_params = serde_json::from_value::<InitializeParams>(req.params)
+        .context("parse `initialize` request params")?;
 
-    // this is an initialize request, it's special because it cannot be sent twice or
-    // rust-analyzer will crash.
+    // Remove `lspMux` from `initializationOptions`, it's ra-multiplex extension
+    // and we don't want to forward it to the real language server.
+    let options = init_params
+        .initialization_options
+        .as_mut()
+        .context("missing `initializationOptions` in `initialize` request")?
+        .lsp_mux
+        .take()
+        .context("missing `lspMux` in `initializationOptions` in `initialize` request")?;
+    // TODO verify protocol version
 
-    // We save the request id so we can later use it for the response and we replace it with a known value.
-    let init_request_id = mem::replace(&mut req.id, RequestId::String(INIT_REQUEST_ID.to_owned()));
+    // Select the workspace root directory.
+    //
+    // Ideally we'd be looking up any server which has a superset of workspace
+    // folders active possibly adding transforming the `initialize` request into
+    // a few requests for adding workspace folders if the server supports it.
+    // Buuut let's just run with supporting single-folder workspaces only at
+    // first, it's probably the most common use-case anyway.
+    let folders = &init_params.workspace_folders;
+    ensure!(
+        folders.len() == 1,
+        "workspace must have exactly 1 folder, has {n}.\n{folders:#?}",
+        n = folders.len(),
+    );
+    let folder = init_params.workspace_folders[0].clone();
 
-    if instance.init_cache.attempt_send_request() {
-        instance
-            .message_writer
-            .send(req.into())
-            .await
-            .context("forward client request")?;
+    // Get an language server instance for this client.
+    let key = InstanceKey {
+        server: options.server,
+        args: options.args,
+        workspace_root: folder.uri,
+    };
+    let instance = instance::get_or_spawn(instance_map, key, init_params).await?;
+
+    // Respond to client's `initialize` request using a response result from
+    // the first time this server instance was initialized, it might not be a
+    // response directly to our previous request but it should be similar since
+    let res = ResponseSuccess {
+        jsonrpc: Version,
+        result: serde_json::to_value(instance.initialize_result()).unwrap(),
+        id: req.id,
+    };
+    writer
+        .write_message(&res.into())
+        .await
+        .context("send `initialize` request response")?;
+
+    // Wait for the client to send `initialized` notification. We don't want to
+    // forward it since the server only expects one and we already sent a fake
+    // one during the server handshake.
+    match reader
+        .read_message()
+        .await
+        .context("receive `initialized` notification")?
+        .context("channel closed")?
+    {
+        Message::Notification(notif) if notif.method == "initialized" => {
+            // Discard the notification.
+        }
+        _ => bail!("second client message was not `initialized` notification"),
     }
+    info!("initialized client");
 
-    Ok(init_request_id)
-}
-
-async fn wait_for_initialize_response(
-    init_request_id: RequestId,
-    instance: &Instance,
-    tx: mpsc::Sender<Message>,
-) -> Result<()> {
-    // Parse the cached message and restore the `id` to the value this client expects
-    let mut res = instance.init_cache.response.wait().await.clone();
-    res.id = init_request_id;
-    debug!(message = ?Message::from(res.clone()), "send response to InitializeRequest");
-    tx.send(res.into())
-        .await
-        .context("send initialize response")?;
-    Ok(())
-}
-
-async fn register_client_with_instance(
-    port: u16,
-    instance: &Instance,
-) -> (mpsc::Sender<Message>, mpsc::Receiver<Message>) {
     let (client_tx, client_rx) = mpsc::channel(64);
-    instance
-        .message_readers
-        .lock()
-        .await
-        .insert(port, client_tx.clone());
-    (client_tx, client_rx)
+    let (close_tx, close_rx) = mpsc::channel(1);
+    task::spawn(input_task(client_rx, close_rx, writer).in_current_span());
+    instance.add_client(port, client_tx.clone()).await;
+
+    task::spawn(output_task(reader, port, instance, close_tx).in_current_span());
+
+    Ok(())
 }
 
 /// Receives messages from a channel and writes tem to the client input socket
 async fn input_task(
     mut rx: mpsc::Receiver<Message>,
     mut close_rx: mpsc::Receiver<Message>,
-    socket_write: OwnedWriteHalf,
+    mut writer: LspWriter<OwnedWriteHalf>,
 ) {
-    let mut writer = LspWriter::new(socket_write);
-
     // Unlike the output task, here we first wait on the channel which is going to
     // block until the language server sends a notification, however if we're the last
     // client and have just closed the server is unlikely to send any. This results in the
@@ -133,7 +131,6 @@ async fn input_task(
         message = close_rx.recv() => message,
         message = rx.recv() => message,
     } {
-        trace!(?message, "-> client");
         if let Err(err) = writer.write_message(&message).await {
             match err.kind() {
                 // ignore benign errors, treat as socket close
@@ -158,14 +155,11 @@ fn tag_id(port: u16, id: &RequestId) -> RequestId {
 /// Reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
 /// to the writer
 async fn output_task(
+    mut reader: LspReader<BufReader<OwnedReadHalf>>,
     port: u16,
     instance: Arc<Instance>,
-    socket_read: BufReader<OwnedReadHalf>,
     close_tx: mpsc::Sender<Message>,
 ) {
-    let mut reader = LspReader::new(socket_read);
-    let tx = instance.message_writer.clone();
-
     loop {
         let message = match reader.read_message().await {
             Ok(Some(message)) => message,
@@ -178,25 +172,8 @@ async fn output_task(
                 continue;
             }
         };
-        trace!(?message, "<- client");
 
         match message {
-            Message::Notification(notif) if notif.method == "initialized" => {
-                // Initialized notification can only be sent once per server
-                if instance.init_cache.attempt_send_notif() {
-                    debug!("send InitializedNotification");
-
-                    if tx.send(notif.into()).await.is_err() {
-                        break;
-                    }
-                    instance.keep_alive();
-                } else {
-                    // We're not the first, skip processing the message further
-                    debug!("skip InitializedNotification");
-                    continue;
-                }
-            }
-
             Message::Request(req) if req.method == "shutdown" => {
                 // Client requested the server to shut down but other clients might still be connected.
                 // Instead we disconnect this client to prevent the editor hanging
@@ -215,7 +192,7 @@ async fn output_task(
 
             Message::Request(mut req) => {
                 req.id = tag_id(port, &req.id);
-                if tx.send(req.into()).await.is_err() {
+                if instance.send_message(req.into()).await.is_err() {
                     break;
                 }
                 instance.keep_alive();
@@ -226,7 +203,7 @@ async fn output_task(
             }
 
             Message::Notification(notif) => {
-                if tx.send(notif.into()).await.is_err() {
+                if instance.send_message(notif.into()).await.is_err() {
                     break;
                 }
                 instance.keep_alive();
