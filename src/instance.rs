@@ -1,142 +1,69 @@
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::str::{self, FromStr};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
-use tracing::{debug, error, info, instrument, trace, warn, Instrument};
+use tracing::{debug, error, field, info, instrument, warn, Instrument};
 
 use crate::config::Config;
-use crate::lsp::jsonrpc::{Message, RequestId, ResponseSuccess};
+use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::proto;
-use crate::wait_cell::WaitCell;
+use crate::lsp::{InitializeParams, InitializeResult};
 
-/// keeps track of the initialize/initialized handshake for an instance
-#[derive(Default)]
-pub struct InitializeCache {
-    request_sent: AtomicBool,
-    notif_sent: AtomicBool,
-    pub response: WaitCell<ResponseSuccess>,
-}
-
-impl InitializeCache {
-    /// returns true if this is the first thread attempting to send a request
-    pub fn attempt_send_request(&self) -> bool {
-        let already_sent = self.request_sent.swap(true, Ordering::SeqCst);
-        !already_sent
-    }
-
-    /// returns true if this is the first thread attempting to send an initialized notification
-    pub fn attempt_send_notif(&self) -> bool {
-        let already_sent = self.notif_sent.swap(true, Ordering::SeqCst);
-        !already_sent
-    }
-}
-
-/// Dummy id used for the InitializeRequest and expected in the response
-pub const INIT_REQUEST_ID: &str = "lspmux:initialize_request";
-
-/// specifies server configuration, if another server with the same configuration is requested we
-/// can reuse it
+/// Specifies server configuration
+///
+/// If another server with the same configuration is requested we can reuse it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct InstanceKey {
-    server: String,
-    args: Vec<String>,
-    workspace_root: PathBuf,
-}
-
-impl InstanceKey {
-    pub fn server(&self) -> &str {
-        &self.server
-    }
-
-    pub fn args(&self) -> &[String] {
-        &self.args
-    }
-
-    pub fn workspace_root(&self) -> &Path {
-        &self.workspace_root
-    }
-
-    pub async fn from_proto_init(proto_init: &proto::Init) -> InstanceKey {
-        let config = Config::load_or_default().await;
-
-        /// we assume that the top-most directory from the client_cwd containing a file named `Cargo.toml`
-        /// is the project root
-        fn find_cargo_workspace_root(client_cwd: &str) -> Option<PathBuf> {
-            let client_cwd = Path::new(&client_cwd);
-            let mut project_root = None;
-            for ancestor in client_cwd.ancestors() {
-                let cargo_toml = ancestor.join("Cargo.toml");
-                if cargo_toml.exists() {
-                    project_root = Some(ancestor.to_owned());
-                }
-            }
-            project_root
-        }
-
-        /// for non-cargo projects we use a marker file, the first ancestor directory containing a
-        /// marker file `.ra-multiplex-workspace-root` will be considered the workspace root
-        fn find_ra_multiplex_workspace_root(client_cwd: &str) -> Option<PathBuf> {
-            let client_cwd = Path::new(&client_cwd);
-            for ancestor in client_cwd.ancestors() {
-                let marker = ancestor.join(".ra-multiplex-workspace-root");
-                if marker.exists() {
-                    return Some(ancestor.to_owned());
-                }
-            }
-            None
-        }
-
-        // workspace root defaults to the client cwd, this is suboptimal because we may spawn more
-        // server instances than required but should always be correct at least
-        let mut workspace_root = PathBuf::from(&proto_init.cwd);
-
-        if config.workspace_detection {
-            // naive detection whether the requested server is likely rust-analyzer
-            if proto_init.server.contains("rust-analyzer") {
-                if let Some(cargo_root) = find_cargo_workspace_root(&proto_init.cwd) {
-                    workspace_root = cargo_root;
-                }
-            }
-            // the ra-multiplex marker file overrides even the cargo workspace detection if present
-            if let Some(marked_root) = find_ra_multiplex_workspace_root(&proto_init.cwd) {
-                workspace_root = marked_root;
-            }
-        }
-
-        InstanceKey {
-            workspace_root,
-            server: proto_init.server.clone(),
-            args: proto_init.args.clone(),
-        }
-    }
+    pub server: String,
+    pub args: Vec<String>,
+    /// `initialize.params.workspace_folders[0].uri`
+    pub workspace_root: String,
 }
 
 /// Language server instance
 pub struct Instance {
+    /// Language server child process id
     pid: u32,
-    /// wakes up the wait_task and asks it to send SIGKILL to the instance
+
+    /// Server's response to `initialize` request
+    init_result: InitializeResult,
+
+    /// Sending messages to the language server instance
+    server: mpsc::Sender<Message>,
+
+    /// Send messages to clients
+    clients: Mutex<HashMap<u16, mpsc::Sender<Message>>>,
+
+    /// Wakes up `wait_task` and asks it to send SIGKILL to the instance.
     close: Notify,
-    key: InstanceKey,
-    pub init_cache: InitializeCache,
-    pub message_readers: Mutex<HashMap<u16, mpsc::Sender<Message>>>,
-    pub message_writer: mpsc::Sender<Message>,
 
     /// Last time a message was sent to this instance
     ///
     /// Uses UTC unix timestamp ([utc_now] function)
     last_used: AtomicI64,
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        // Make sure we're not leaking anything
+        debug!("instance dropped");
+    }
+}
+
+// Current unix timestamp with second precission
+fn utc_now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 impl Instance {
@@ -149,27 +76,28 @@ impl Instance {
     pub fn idle(&self) -> i64 {
         i64::max(0, utc_now() - self.last_used.load(Ordering::Relaxed))
     }
-}
 
-fn utc_now() -> i64 {
-    time::OffsetDateTime::now_utc().unix_timestamp()
-}
+    pub fn initialize_result(&self) -> InitializeResult {
+        self.init_result.clone()
+    }
 
-impl Drop for Instance {
-    fn drop(&mut self) {
-        debug!("instance dropped");
+    pub async fn add_client(&self, port: u16, channel: mpsc::Sender<Message>) {
+        if let Some(_) = self.clients.lock().await.insert(port, channel) {
+            unreachable!("BUG: added two clients with the same port");
+        }
+    }
+
+    /// Send a message to the language server instance
+    pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
+        self.server.send(message).await
     }
 }
 
-pub struct InstanceMap {
-    map: HashMap<InstanceKey, Arc<Instance>>,
-}
+pub struct InstanceMap(HashMap<InstanceKey, Arc<Instance>>);
 
 impl InstanceMap {
     pub async fn new() -> Arc<Mutex<Self>> {
-        let instance_map = Arc::new(Mutex::new(InstanceMap {
-            map: HashMap::new(),
-        }));
+        let instance_map = Arc::new(Mutex::new(InstanceMap(HashMap::new())));
         let config = Config::load_or_default().await;
         task::spawn(gc_task(
             instance_map.clone(),
@@ -177,21 +105,6 @@ impl InstanceMap {
             config.instance_timeout,
         ));
         instance_map
-    }
-}
-
-/// find or spawn an instance for a `project_root`
-pub async fn get(
-    instance_map: Arc<Mutex<InstanceMap>>,
-    key: &InstanceKey,
-) -> Result<Arc<Instance>> {
-    match instance_map.lock().await.map.entry(key.to_owned()) {
-        Entry::Occupied(e) => Ok(Arc::clone(e.get())),
-        Entry::Vacant(e) => {
-            let new = Instance::spawn(key, instance_map.clone()).context("spawn ra instance")?;
-            e.insert(Arc::clone(&new));
-            Ok(new)
-        }
     }
 }
 
@@ -206,8 +119,8 @@ async fn gc_task(
     loop {
         interval.tick().await;
 
-        for (key, instance) in instance_map.lock().await.map.iter() {
-            let mut message_readers = instance.message_readers.lock().await;
+        for (key, instance) in instance_map.lock().await.0.iter() {
+            let mut message_readers = instance.clients.lock().await;
 
             // Remove closed senders
             //
@@ -231,50 +144,147 @@ async fn gc_task(
     }
 }
 
-impl Instance {
-    #[instrument(name = "instance", fields(path = ?key.workspace_root), skip_all, parent = None)]
-    fn spawn(key: &InstanceKey, instance_map: Arc<Mutex<InstanceMap>>) -> Result<Arc<Instance>> {
-        let mut child = Command::new(&key.server)
-            .args(&key.args)
-            .current_dir(&key.workspace_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "couldn't spawn rust-analyzer with command: `{}{}{}`",
-                    &key.server,
-                    if key.args.is_empty() { "" } else { " " },
-                    key.args.join(" ")
-                )
-            })?;
+/// Find an existing or spawn a new language server instance
+///
+/// The instance is looked up based on `instance_key`. If an existing one is
+/// found then it's returned and `init_req_params` are discarded. If it's
+/// not found a new instance is spawned and initialized using the provided
+/// `init_req_params`, this insance is then inserted into the map and returned.
+pub async fn get_or_spawn(
+    map: Arc<Mutex<InstanceMap>>,
+    key: InstanceKey,
+    init_req_params: InitializeParams,
+) -> Result<Arc<Instance>> {
+    // We have locked the whole map so we can assume noone else tries to spawn
+    // the same instance again.
+    let map_clone = map.clone();
+    let mut map_lock = map_clone.lock().await;
 
-        let pid = child.id().context("child exited early, couldn't get PID")?;
-        let stderr = child.stderr.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let (message_writer, rx) = mpsc::channel(64);
-
-        let instance = Arc::new(Instance {
-            pid,
-            close: Notify::new(),
-            key: key.to_owned(),
-            init_cache: InitializeCache::default(),
-            message_readers: Mutex::default(),
-            message_writer,
-            last_used: AtomicI64::new(utc_now()),
-        });
-
-        task::spawn(wait_task(instance.clone(), instance_map, child).in_current_span());
-        task::spawn(stderr_task(stderr).in_current_span());
-        task::spawn(stdout_task(instance.clone(), stdout).in_current_span());
-        task::spawn(stdin_task(rx, stdin).in_current_span());
-
-        info!(server = ?key.server, args = ?key.args, "spawned");
-
-        Ok(instance)
+    if let Some(instance) = map_lock.0.get(&key) {
+        info!("reusing language server instance");
+        return Ok(instance.clone());
     }
+
+    let instance = spawn(key.clone(), init_req_params, map)
+        .await
+        .context("spawning instance")?;
+    map_lock.0.insert(key, instance.clone());
+
+    Ok(instance)
+}
+
+#[instrument(name = "instance", fields(pid = field::Empty), skip_all, parent = None)]
+async fn spawn(
+    key: InstanceKey,
+    init_req_params: InitializeParams,
+    // Caller `get_or_spawn` is holding a lock to the map, we must not try to
+    // lock it within this function to not cause deadlock, only spawned tasks
+    // are allowed to lock it again.
+    map: Arc<Mutex<InstanceMap>>,
+) -> Result<Arc<Instance>> {
+    let mut child = Command::new(&key.server)
+        .args(&key.args)
+        // .current_dir(&key.workspace_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "spawning langauge server: server={:?}, args={:?}, cwd={:?}",
+                key.server, key.args, key.workspace_root,
+            )
+        })?;
+
+    let pid = child.id().context("child exited early, couldn't get PID")?;
+    tracing::Span::current().record("pid", pid);
+
+    info!(server = ?key.server, args = ?key.args, cwd = ?key.workspace_root, "spawned langauge server");
+
+    let stderr = child.stderr.take().unwrap();
+    task::spawn(stderr_task(stderr).in_current_span());
+
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = LspReader::new(BufReader::new(stdout), "server");
+
+    let stdin = child.stdin.take().unwrap();
+    let mut writer = LspWriter::new(stdin, "-> server");
+
+    let init_result = initialize_handshake(init_req_params, &mut reader, &mut writer)
+        .await
+        .context("server handshake")?;
+
+    info!("initialized server");
+
+    // TODO spawn stdin, stdout and wait tasks
+
+    let (message_writer, rx) = mpsc::channel(64);
+
+    let instance = Arc::new(Instance {
+        pid,
+        init_result,
+        server: message_writer,
+        clients: Mutex::default(),
+        close: Notify::new(),
+        last_used: AtomicI64::new(utc_now()),
+    });
+
+    task::spawn(stdout_task(instance.clone(), reader).in_current_span());
+    task::spawn(stdin_task(rx, writer).in_current_span());
+
+    task::spawn(wait_task(instance.clone(), key, map, child).in_current_span());
+
+    Ok(instance)
+}
+
+#[instrument(skip_all)]
+async fn initialize_handshake(
+    init_req_params: InitializeParams,
+    reader: &mut LspReader<BufReader<ChildStdout>>,
+    writer: &mut LspWriter<ChildStdin>,
+) -> Result<InitializeResult> {
+    let request_id = "lspmux:initialize_request";
+
+    // Use the first client's `InitializeParams` to initialize server. We assume
+    // all subsequent clients configuration will be somewhat compatible with
+    // whatever the first client negotiated for the same `workspace_root`,
+    // `server` and `args`.
+    let req = Request {
+        jsonrpc: Version,
+        method: "initialize".into(),
+        params: serde_json::to_value(init_req_params).unwrap(),
+        id: RequestId::String(request_id.into()),
+    };
+    writer
+        .write_message(&req.into())
+        .await
+        .context("send initialize request")?;
+
+    let res = match reader
+        .read_message()
+        .await
+        .context("receive initialize response")?
+        .context("stream ended")?
+    {
+        Message::ResponseSuccess(res) if res.id == request_id => res,
+        _ => bail!("first server message was not initialize response"),
+    };
+    let result = serde_json::from_value(res.result).context("parse initialize response result")?;
+
+    // Send a "fake" `initialized` notification to the server. We wait for them
+    // from each client's `initialized` notification ourselves and they don't
+    // contain any data that would need passing on.
+    let init_notif = Notification {
+        jsonrpc: Version,
+        method: "initialized".into(),
+        params: json!({}),
+    };
+    writer
+        .write_message(&init_notif.into())
+        .await
+        .context("send initialized notification")?;
+
+    Ok(result)
 }
 
 /// Read errors from langauge server stderr and log them
@@ -303,14 +313,11 @@ async fn stderr_task(stderr: ChildStderr) {
 }
 
 /// Read messages sent by clients from a channel and write them into language server stdin
-async fn stdin_task(mut receiver: mpsc::Receiver<Message>, stdin: ChildStdin) {
-    let mut writer = LspWriter::new(stdin);
-
+async fn stdin_task(mut receiver: mpsc::Receiver<Message>, mut writer: LspWriter<ChildStdin>) {
     // Because we (stdin task) don't keep a reference to `self` it will be dropped when the
     // child closes and all the clients disconnect including the sender and this receiver
     // will not keep blocking (unlike in client input task)
     while let Some(message) = receiver.recv().await {
-        trace!(?message, "-> server");
         if let Err(err) = writer.write_message(&message).await {
             match err.kind() {
                 // stdin is closed, no need to log an error
@@ -329,6 +336,7 @@ async fn stdin_task(mut receiver: mpsc::Receiver<Message>, stdin: ChildStdin) {
 /// Wait for child and logs when it exits
 async fn wait_task(
     instance: Arc<Instance>,
+    key: InstanceKey,
     instance_map: Arc<Mutex<InstanceMap>>,
     mut child: Child,
 ) {
@@ -341,14 +349,14 @@ async fn wait_task(
             }
             exit = child.wait() => {
                 // Remove the closing instance from the map so new clients spawn their own instance
-                instance_map.lock().await.map.remove(&instance.key);
+                instance_map.lock().await.0.remove(&key);
 
                 // Disconnect all current clients
                 //
                 // We'll rely on the editor client to restart the ra-multiplex client,
                 // start a new connection and we'll spawn another instance like we'd with
                 // any other new client.
-                instance.message_readers.lock().await.clear();
+                instance.clients.lock().await.clear();
 
                 match exit {
                     Ok(status) => {
@@ -397,9 +405,7 @@ fn parse_tagged_id(tagged: &RequestId) -> Option<(u16, RequestId)> {
 }
 
 /// Read messages from server stdout and distribute them to client channels
-async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
-    let mut reader = LspReader::new(BufReader::new(stdout));
-
+async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<ChildStdout>>) {
     loop {
         let message = match reader.read_message().await {
             Ok(Some(message)) => message,
@@ -412,27 +418,17 @@ async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
                 continue;
             }
         };
-        trace!(?message, "<- server");
 
         // Locked after we have a message to send
-        let message_readers = instance.message_readers.lock().await;
+        let message_readers = instance.clients.lock().await;
         match message {
-            Message::ResponseSuccess(res) if res.id == INIT_REQUEST_ID => {
-                // This is a response to the InitializeRequest, we need to process it
-                // separately
-                debug!(message = ?Message::from(res.clone()), "recv InitializeRequest response");
-                if instance.init_cache.response.set(res).await.is_err() {
-                    error!("received multiple InitializeRequest responses from instance")
-                }
-            }
-
             Message::ResponseSuccess(mut res) => {
                 if let Some((port, id)) = parse_tagged_id(&res.id) {
                     res.id = id;
                     if let Some(sender) = message_readers.get(&port) {
                         let _ignore = sender.send(res.into()).await;
                     } else {
-                        debug!("no client");
+                        debug!(?port, "no client");
                     }
                 };
             }
@@ -443,7 +439,7 @@ async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
                     if let Some(sender) = message_readers.get(&port) {
                         let _ignore = sender.send(res.into()).await;
                     } else {
-                        debug!("no client");
+                        debug!(?port, "no client");
                     }
                 };
             }

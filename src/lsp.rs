@@ -72,13 +72,13 @@ pub struct ClientInfo {
     pub version: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct InitializationOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
-    lsp_mux: Option<LspMuxOptions>,
+    pub lsp_mux: Option<LspMuxOptions>,
 
     #[serde(flatten)]
-    other_options: serde_json::Map<String, serde_json::Value>,
+    pub other_options: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -89,7 +89,7 @@ pub enum TraceValue {
     Verbose,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkspaceFolder {
     pub uri: String,
     pub name: String,
@@ -120,4 +120,19 @@ pub struct LspMuxOptions {
     /// empty list if omited.
     #[serde(default = "Vec::new")]
     pub args: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResult {
+    capabilities: serde_json::Value,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    server_info: Option<ServerInfo>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ServerInfo {
+    name: String,
+    version: Option<String>,
 }
