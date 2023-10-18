@@ -159,38 +159,63 @@ impl fmt::Debug for Message {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{from_value, json, to_value, Value};
+
     use super::*;
 
-    fn test(input: &str) {
-        let deserialized = serde_json::from_str::<Message>(input).expect("failed to deserialize");
-        let serialized = serde_json::to_string(&deserialized).expect("failed to serialize");
+    fn test(input: Value) {
+        let deserialized = from_value::<Message>(input.clone()).expect("failed to deserialize");
+        let serialized = to_value(&deserialized).expect("failed to serialize");
         assert_eq!(input, serialized);
     }
 
     #[test]
     fn call_with_positional_parameters() {
-        test(r#"{"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":1}"#)
+        test(json!({
+            "jsonrpc": "2.0",
+            "method": "subtract",
+            "params": [42, 23],
+            "id": 1,
+        }))
     }
 
     #[test]
     fn call_with_named_parameters() {
-        test(
-            r#"{"jsonrpc":"2.0","method":"subtract","params":{"minuend":42,"subtrahend":23},"id":3}"#,
-        );
+        test(json!({
+            "jsonrpc": "2.0",
+            "method": "subtract",
+            "params": { "minuend": 42, "subtrahend": 23 },
+            "id": 3,
+        }))
     }
 
     #[test]
     fn response() {
-        test(r#"{"jsonrpc":"2.0","result":19,"id":1}"#)
+        test(json!({
+            "jsonrpc": "2.0",
+            "result": 19,
+            "id": 1,
+        }))
     }
 
     #[test]
     fn notification() {
-        test(r#"{"jsonrpc":"2.0","method":"update","params":[1,2,3,4,5]}"#)
+        test(json!({
+            "jsonrpc": "2.0",
+            "method": "update",
+            "params": [1, 2, 3, 4, 5],
+        }))
     }
 
     #[test]
     fn error() {
-        test(r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":"1"}"#)
+        test(json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+            },
+            "id": "1",
+        }))
     }
 }
