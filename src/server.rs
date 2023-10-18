@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tokio::task;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
-use crate::client::Client;
+use crate::client;
 use crate::config::Config;
 use crate::instance::InstanceMap;
 
@@ -29,7 +29,7 @@ pub async fn run() -> Result<()> {
                 task::spawn(
                     async move {
                         info!("client connected");
-                        match Client::process(socket, port, instance_map).await {
+                        match client::process(socket, port, instance_map).await {
                             Ok(_) => debug!("client initialized"),
                             Err(err) => error!("client error: {err:?}"),
                         }
