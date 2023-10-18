@@ -12,7 +12,7 @@ use tokio::{select, task};
 use tracing::{debug, error, info, trace, Instrument};
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap, INIT_REQUEST_ID};
-use crate::lsp::jsonrpc::{Message, ResponseSuccess, Version};
+use crate::lsp::jsonrpc::{Message, RequestId, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::proto;
 
@@ -52,7 +52,7 @@ pub async fn process(
 async fn wait_for_initialize_request(
     instance: &Instance,
     socket_read: &mut BufReader<OwnedReadHalf>,
-) -> Result<Value> {
+) -> Result<RequestId> {
     let mut reader = LspReader::new(socket_read);
 
     let message = reader.read_message().await?.context("channel closed")?;
@@ -70,7 +70,7 @@ async fn wait_for_initialize_request(
     // rust-analyzer will crash.
 
     // We save the request id so we can later use it for the response and we replace it with a known value.
-    let init_request_id = mem::replace(&mut req.id, Value::String(INIT_REQUEST_ID.to_owned()));
+    let init_request_id = mem::replace(&mut req.id, RequestId::String(INIT_REQUEST_ID.to_owned()));
 
     if instance.init_cache.attempt_send_request() {
         instance
@@ -84,7 +84,7 @@ async fn wait_for_initialize_request(
 }
 
 async fn wait_for_initialize_response(
-    init_request_id: Value,
+    init_request_id: RequestId,
     instance: &Instance,
     tx: mpsc::Sender<Message>,
 ) -> Result<()> {
@@ -148,11 +148,10 @@ async fn input_task(
     info!("client disconnected");
 }
 
-fn tag_id(port: u16, id: &Value) -> Value {
-    Value::String(match id {
-        Value::Number(number) => format!("{port}:n:{number}"),
-        Value::String(string) => format!("{port}:s:{string}"),
-        _ => unreachable!("unexpected message id type {id:?}"),
+fn tag_id(port: u16, id: &RequestId) -> RequestId {
+    RequestId::String(match id {
+        RequestId::Number(number) => format!("{port}:n:{number}"),
+        RequestId::String(string) => format!("{port}:s:{string}"),
     })
 }
 

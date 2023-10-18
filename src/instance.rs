@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use serde_json::{Number, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex, Notify};
@@ -17,7 +16,7 @@ use tokio::{select, task};
 use tracing::{debug, error, info, instrument, trace, warn, Instrument};
 
 use crate::config::Config;
-use crate::lsp::jsonrpc::{Message, ResponseSuccess};
+use crate::lsp::jsonrpc::{Message, RequestId, ResponseSuccess};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::proto;
 use crate::wait_cell::WaitCell;
@@ -373,9 +372,9 @@ async fn wait_task(
     }
 }
 
-fn parse_tagged_id(tagged: &Value) -> Option<(u16, Value)> {
-    match (|| -> Result<(u16, Value)> {
-        let Value::String(tagged) = tagged else {
+fn parse_tagged_id(tagged: &RequestId) -> Option<(u16, RequestId)> {
+    match (|| -> Result<_> {
+        let RequestId::String(tagged) = tagged else {
             bail!("tagged id must be a String found `{tagged:?}`");
         };
 
@@ -383,8 +382,8 @@ fn parse_tagged_id(tagged: &Value) -> Option<(u16, Value)> {
         let port = u16::from_str(port)?;
         let (value_type, old_id) = rest.split_once(':').context("missing second `:`")?;
         let old_id = match value_type {
-            "n" => Value::Number(Number::from_str(old_id)?),
-            "s" => Value::String(old_id.to_owned()),
+            "n" => RequestId::Number(old_id.parse()?),
+            "s" => RequestId::String(old_id.to_owned()),
             _ => bail!("invalid tag type `{value_type}`"),
         };
         Ok((port, old_id))
@@ -418,9 +417,7 @@ async fn stdout_task(instance: Arc<Instance>, stdout: ChildStdout) {
         // Locked after we have a message to send
         let message_readers = instance.message_readers.lock().await;
         match message {
-            Message::ResponseSuccess(res)
-                if res.id == Value::String(INIT_REQUEST_ID.to_owned()) =>
-            {
+            Message::ResponseSuccess(res) if res.id == INIT_REQUEST_ID => {
                 // This is a response to the InitializeRequest, we need to process it
                 // separately
                 debug!(message = ?Message::from(res.clone()), "recv InitializeRequest response");
