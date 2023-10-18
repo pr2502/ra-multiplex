@@ -28,5 +28,96 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
+use serde_derive::{Deserialize, Serialize};
+
 pub mod jsonrpc;
 pub mod transport;
+
+/// Params for the `initialize` request
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeParams {
+    pub process_id: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_info: Option<ClientInfo>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_path: Option<String>,
+
+    pub root_uri: Option<String>,
+
+    /// User provided initialization options
+    ///
+    /// This is where lspmux-proxy should be inserting it's setup. However we
+    /// should remove them again before forwarding them to the language server.
+    pub initialization_options: Option<InitializationOptions>,
+
+    pub capabilities: serde_json::Value,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<TraceValue>,
+
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_folders: Vec<WorkspaceFolder>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InitializationOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lsp_mux: Option<LspMuxOptions>,
+
+    #[serde(flatten)]
+    other_options: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum TraceValue {
+    Off,
+    Messages,
+    Verbose,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WorkspaceFolder {
+    pub uri: String,
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LspMuxOptions {
+    /// Version number of the ra-multiplex binary
+    ///
+    /// Version is for now naively checked for equality, the server will refuse
+    /// connections to mismatched clients.
+    ///
+    /// If you're using ra-multiplex just make sure you're using the same build
+    /// for both the proxy and server, restarting the server if you've upgraded.
+    ///
+    /// If you're connecting directly from a client make sure to set the same
+    /// version reported by `ra-multiplex --version`.
+    pub version: String,
+
+    /// The language server to run
+    ///
+    /// Can be either an absolute path like `/usr/local/bin/rust-analyzer` or a
+    /// plain name like `rust-analyzer` which will then be resolved according to
+    /// the *server's* path.
+    pub server: String,
+
+    /// Arguments which will be passed to the language server, defaults to an
+    /// empty list if omited.
+    #[serde(default = "Vec::new")]
+    pub args: Vec<String>,
+}
