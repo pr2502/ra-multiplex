@@ -24,7 +24,7 @@ pub struct Request {
     pub method: String,
     #[serde(default)]
     pub params: serde_json::Value,
-    pub id: serde_json::Value,
+    pub id: RequestId,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -41,7 +41,7 @@ pub struct Notification {
 pub struct ResponseError {
     pub jsonrpc: Version,
     pub error: Error,
-    pub id: serde_json::Value,
+    pub id: RequestId,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -50,7 +50,7 @@ pub struct ResponseSuccess {
     pub jsonrpc: Version,
     #[serde(default)]
     pub result: serde_json::Value,
-    pub id: serde_json::Value,
+    pub id: RequestId,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -67,6 +67,23 @@ pub struct Error {
 pub enum Params {
     ByPosition(Vec<serde_json::Value>),
     ByName(serde_json::Map<String, serde_json::Value>),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum RequestId {
+    Number(i64),
+    String(String),
+    // It can also be null but we intentionally skip those as "invalid"
+}
+
+impl<S> PartialEq<S> for RequestId
+where
+    S: AsRef<str>,
+{
+    fn eq(&self, rhs: &S) -> bool {
+        matches!(self, RequestId::String(lhs) if lhs == rhs.as_ref())
+    }
 }
 
 /// ZST representation of the `"2.0"` version string
