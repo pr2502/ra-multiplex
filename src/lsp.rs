@@ -73,6 +73,7 @@ pub struct ClientInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializationOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lsp_mux: Option<LspMuxOptions>,
