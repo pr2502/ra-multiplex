@@ -3,4 +3,3 @@ gc_interval = 10
 listen = ["127.0.0.1", 27631]
 connect = ["127.0.0.1", 27631]
 log_filters = "info"
-workspace_detection = true
