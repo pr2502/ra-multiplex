@@ -1,0 +1,3 @@
+[[language]]
+name = "rust"
+language-server = { command = "ra-multiplex", args = ["client", "--server-path", "rust-analyzer"] }
