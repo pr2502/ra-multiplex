@@ -34,10 +34,6 @@ mod default {
     pub fn log_filters() -> String {
         "info".to_owned()
     }
-
-    pub fn workspace_detection() -> bool {
-        true
-    }
 }
 
 mod de {
@@ -102,9 +98,6 @@ pub struct Config {
 
     #[serde(default = "default::log_filters")]
     pub log_filters: String,
-
-    #[serde(default = "default::workspace_detection")]
-    pub workspace_detection: bool,
 }
 
 #[cfg(test)]
@@ -130,7 +123,6 @@ impl Config {
             listen: default::listen(),
             connect: default::connect(),
             log_filters: default::log_filters(),
-            workspace_detection: default::workspace_detection(),
         }
     }
 
