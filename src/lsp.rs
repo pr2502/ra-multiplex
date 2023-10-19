@@ -107,7 +107,7 @@ pub struct LspMuxOptions {
     /// for both the proxy and server, restarting the server if you've upgraded.
     ///
     /// If you're connecting directly from a client make sure to set the same
-    /// version reported by `ra-multiplex --version`.
+    /// protocol version reported by `ra-multiplex --version`.
     pub version: String,
 
     /// The language server to run
@@ -136,4 +136,73 @@ pub struct InitializeResult {
 pub struct ServerInfo {
     name: String,
     version: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
+    use serde_json::{from_value, json, to_value, Value};
+
+    use super::*;
+
+    fn test<T>(input: Value)
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let deserialized = from_value::<T>(input.clone()).expect("failed to deserialize");
+        let serialized = to_value(&deserialized).expect("failed to serialize");
+        assert_eq!(input, serialized);
+    }
+
+    #[test]
+    fn lsp_mux_only() {
+        test::<InitializationOptions>(json!({
+            "lspMux": {
+                "version": "1",
+                "server": "some-language-server",
+                "args": ["a", "b", "c"]
+            }
+        }))
+    }
+
+    #[test]
+    fn lsp_mux_and_other_stuff() {
+        test::<InitializationOptions>(json!({
+            "lspMux": {
+                "version": "1",
+                "server": "some-language-server",
+                "args": ["a", "b", "c"]
+            },
+            "lsp_mux": "not the right key",
+            "lspmux": "also not it",
+            "lsp mux": "wrong one",
+            "a": 1,
+            "b": null,
+            "c": {},
+            "d": [],
+        }))
+    }
+
+    #[test]
+    #[should_panic = "missing field `version`"]
+    fn missing_version() {
+        test::<InitializationOptions>(json!({
+            "lspMux": {
+                "server": "some-language-server",
+                "args": ["a", "b", "c"]
+            },
+        }))
+    }
+
+    #[test]
+    #[should_panic = "missing field `server`"]
+    fn missing_server() {
+        test::<InitializationOptions>(json!({
+            "lspMux": {
+                "version": "1",
+                "args": ["a", "b", "c"]
+            },
+        }))
+    }
 }
