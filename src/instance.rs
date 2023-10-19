@@ -27,7 +27,6 @@ use crate::lsp::{InitializeParams, InitializeResult};
 pub struct InstanceKey {
     pub server: String,
     pub args: Vec<String>,
-    /// `initialize.params.workspace_folders[0].uri`
     pub workspace_root: String,
 }
 
@@ -184,7 +183,7 @@ async fn spawn(
 ) -> Result<Arc<Instance>> {
     let mut child = Command::new(&key.server)
         .args(&key.args)
-        // .current_dir(&key.workspace_root)
+        .current_dir(&key.workspace_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

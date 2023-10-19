@@ -1,14 +1,15 @@
 use std::io::ErrorKind;
 use std::sync::Arc;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::{select, task};
-use tracing::{debug, error, info, Instrument};
+use tracing::{debug, error, info, warn, Instrument};
+use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
 use crate::lsp::jsonrpc::{Message, RequestId, ResponseSuccess, Version};
@@ -50,31 +51,29 @@ pub async fn process(
     // TODO verify protocol version
 
     // Select the workspace root directory.
-    //
-    // Ideally we'd be looking up any server which has a superset of workspace
-    // folders active possibly adding transforming the `initialize` request into
-    // a few requests for adding workspace folders if the server supports it.
-    // Buuut let's just run with supporting single-folder workspaces only at
-    // first, it's probably the most common use-case anyway.
-    let folders = &init_params.workspace_folders;
-    ensure!(
-        folders.len() == 1,
-        "workspace must have exactly 1 folder, has {n}.\n{folders:#?}",
-        n = folders.len(),
-    );
-    let folder = init_params.workspace_folders[0].clone();
+    let workspace_root = {
+        let (scheme, _, mut path, _, _) = select_workspace_root(&init_params)
+            .context("could not get any workspace_root")?
+            .into_parts();
+        if scheme != uriparse::Scheme::File {
+            bail!("only `file://` URIs are supported");
+        }
+        path.normalize(false);
+        path.to_string()
+    };
 
     // Get an language server instance for this client.
     let key = InstanceKey {
         server: options.server,
         args: options.args,
-        workspace_root: folder.uri,
+        workspace_root,
     };
     let instance = instance::get_or_spawn(instance_map, key, init_params).await?;
 
     // Respond to client's `initialize` request using a response result from
-    // the first time this server instance was initialized, it might not be a
-    // response directly to our previous request but it should be similar since
+    // the first time this server instance was initialized, it might not be
+    // a response directly to our previous request but it should be hopefully
+    // similar if it comes from another instance of the same client.
     let res = ResponseSuccess {
         jsonrpc: Version,
         result: serde_json::to_value(instance.initialize_result()).unwrap(),
@@ -111,22 +110,95 @@ pub async fn process(
     Ok(())
 }
 
+fn select_workspace_root(init_params: &InitializeParams) -> Result<URI> {
+    if init_params.workspace_folders.len() > 1 {
+        // TODO Ideally we'd be looking up any server which has a superset of
+        // workspace folders active possibly adding transforming the `initialize`
+        // request into a few requests for adding workspace folders if the
+        // server supports it. Buuut let's just run with supporting single-folder
+        // workspaces only at first, it's probably the most common use-case anyway.
+        warn!("initialize request with multiple workspace folders isn't supported");
+        debug!(workspace_folders = ?init_params.workspace_folders);
+    }
+
+    if init_params.workspace_folders.len() == 1 {
+        match URI::try_from(init_params.workspace_folders[0].uri.as_str())
+            .context("parse initParams.workspaceFolders[0].uri")
+        {
+            Ok(root) => return Ok(root),
+            Err(err) => warn!(?err, "failed to parse URI"),
+        }
+    }
+
+    assert!(init_params.workspace_folders.is_empty());
+
+    // Using the deprecated fields `rootPath` or `rootUri` as fallback
+    if let Some(root_uri) = &init_params.root_uri {
+        match URI::try_from(root_uri.as_str()).context("parse initParams.rootUri") {
+            Ok(root) => return Ok(root),
+            Err(err) => warn!(?err, "failed to parse URI"),
+        }
+    }
+    if let Some(root_path) = &init_params.root_path {
+        // `rootPath` doesn't have a schema but `Url` requires it to parse
+        match uriparse::Path::try_from(root_path.as_str())
+            .map_err(uriparse::URIError::from)
+            .and_then(|path| {
+                URI::builder()
+                    .with_scheme(uriparse::Scheme::File)
+                    .with_path(path)
+                    .build()
+            })
+            .context("parse initParams.rootPath")
+        {
+            Ok(root) => return Ok(root),
+            Err(err) => warn!(?err, "failed to parse URI"),
+        }
+    }
+
+    // Using the proxy `cwd` as fallback
+    if let Some(proxy_cwd) = init_params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.lsp_mux.as_ref())
+        .and_then(|lsp_mux| lsp_mux.cwd.as_ref())
+    {
+        match uriparse::Path::try_from(proxy_cwd.as_str())
+            .map_err(uriparse::URIError::from)
+            .and_then(|path| {
+                URI::builder()
+                    .with_scheme(uriparse::Scheme::File)
+                    .with_path(path)
+                    .build()
+            })
+            .context("parse initParams.initializationOptions.lspMux.cwd")
+        {
+            Ok(root) => return Ok(root),
+            Err(err) => warn!(?err, "failed to parse URI"),
+        }
+    }
+
+    bail!("could not determine a suitable workspace_root");
+}
+
 /// Receives messages from a channel and writes tem to the client input socket
 async fn input_task(
     mut rx: mpsc::Receiver<Message>,
     mut close_rx: mpsc::Receiver<Message>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) {
-    // Unlike the output task, here we first wait on the channel which is going to
-    // block until the language server sends a notification, however if we're the last
-    // client and have just closed the server is unlikely to send any. This results in the
-    // last client often falsely hanging while the gc task depends on the input channels being
-    // closed to detect a disconnected client.
+    // Unlike the output task, here we first wait on the channel which is going
+    // to block until the language server sends a notification, however if
+    // we're the last client and have just closed the server is unlikely to send
+    // any. This results in the last client often falsely hanging while the gc
+    // task depends on the input channels being closed to detect a disconnected
+    // client.
     //
-    // When a client sends a shutdown request we receive a message on the `close_rx`, send
-    // the reply and close the connection. If no shutdown request was received but the
-    // client closed `close_rx` channel will be dropped (unlike the normal rx channel which
-    // is shared) and the connection will close without sending any response.
+    // When a client sends a shutdown request we receive a message on the
+    // `close_rx`, send the reply and close the connection. If no shutdown
+    // request was received but the client closed `close_rx` channel will be
+    // dropped (unlike the normal rx channel which is shared) and the connection
+    // will close without sending any response.
     while let Some(message) = select! {
         message = close_rx.recv() => message,
         message = rx.recv() => message,

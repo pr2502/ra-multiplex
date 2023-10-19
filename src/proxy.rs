@@ -1,3 +1,4 @@
+use std::env;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -53,6 +54,9 @@ impl AsyncWrite for Stdio {
 
 pub async fn run(server: String, args: Vec<String>) -> Result<()> {
     let config = Config::load_or_default().await;
+    let cwd = env::current_dir()
+        .ok()
+        .and_then(|path| path.to_str().map(String::from));
     let version = String::from("test"); // TODO use a real protocol version number
 
     let mut stream = TcpStream::connect(config.connect)
@@ -78,6 +82,7 @@ pub async fn run(server: String, args: Vec<String>) -> Result<()> {
             version,
             server,
             args,
+            cwd,
         });
     req.params = serde_json::to_value(params).expect("BUG: invalid data");
 

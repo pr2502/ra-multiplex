@@ -121,6 +121,11 @@ pub struct LspMuxOptions {
     /// empty list if omited.
     #[serde(default = "Vec::new")]
     pub args: Vec<String>,
+
+    /// Current working directory of the proxy command. This is only used as
+    /// fallback if the client doesn't provide any workspace root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -161,7 +166,8 @@ mod tests {
             "lspMux": {
                 "version": "1",
                 "server": "some-language-server",
-                "args": ["a", "b", "c"]
+                "args": ["a", "b", "c"],
+                "cwd": "/home/user",
             }
         }))
     }
@@ -172,7 +178,7 @@ mod tests {
             "lspMux": {
                 "version": "1",
                 "server": "some-language-server",
-                "args": ["a", "b", "c"]
+                "args": ["a", "b", "c"],
             },
             "lsp_mux": "not the right key",
             "lspmux": "also not it",
@@ -190,7 +196,7 @@ mod tests {
         test::<InitializationOptions>(json!({
             "lspMux": {
                 "server": "some-language-server",
-                "args": ["a", "b", "c"]
+                "args": ["a", "b", "c"],
             },
         }))
     }
@@ -201,7 +207,7 @@ mod tests {
         test::<InitializationOptions>(json!({
             "lspMux": {
                 "version": "1",
-                "args": ["a", "b", "c"]
+                "args": ["a", "b", "c"],
             },
         }))
     }
