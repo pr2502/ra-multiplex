@@ -12,20 +12,15 @@ windows) to share a single `rust-analyzer` instance per cargo workspace.
 `ra-multiplex` acts like `rust-analyzer` but only connects to a TCP socket at
 `127.0.0.1:27631` and pipes stdin and stdout through it.
 
-Depending on the working directory the `ra-multiplex` client was spawned from
-it can reuse an already spawned `rust-analyzer` instance. It detects workspace
-root as the furthermost ancestor directory containing a `Cargo.toml` file. If
-the automatic workspace detection fails or if you're not using `rust-analyzer`
-as a server you can create a marker file `.ra-multiplex-workspace-root` in the
-directory you want to use as a workspace root, the first ancestor directory
-containing this file will be used.
-
+Depending on the `workspaceFolders` provided by your editor during
+initialization it can reuse an already spawned `rust-analyzer` instance.
+ 
 Because neither LSP nor `rust-analyzer` itself support multiple clients per
-server `ra-multiplex` caches the handshake messages and modifies IDs of
-requests & responses to track which response belongs to which client. Because
-not all messages can be tracked this way it drops some, notably it drops any
-requests from the server, this appears to not be a problem with
-`coc-rust-analyzer` in neovim but YMMV.
+server `ra-multiplex` intercepts the handshake process modifies IDs of requests
+& responses to track which response belongs to which client. Because not all
+messages can be tracked this way it drops some, notably it drops any requests
+from the server, this appears to not be a problem with `coc-rust-analyzer` in
+neovim but YMMV.
 
 If you have any problems you're welcome to open issues on this repository.
 
@@ -69,6 +64,11 @@ CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
     "rust-analyzer.serverPath": "/path/to/ra-multiplex"
 }
 ```
+
+If your editor can connect to a language server via TCP you don't need to use
+the `ra-multiplex` client and connect directly to the server but you need to
+provide the same information as the proxy command would. See the
+[example config for neovim](examples/neovim/init.lua) for details.
 
 
 ## Configuration
@@ -124,22 +124,16 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # is documented in the `env_logger` documentation here:
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
-
-# attempt automatic workspace root detection
-#
-# when enabled every connected client will attempt to discover the root of the
-# workspace it was spawned in. otherwise the client CWD is always used
-workspace_detection = true
 ```
 
 
 ## Other LSP servers
 
-By default `ra-multiplex` uses a `rust-analyzer` binary found in its `$PATH` as
-the server. This can be overridden using the `--ra-mux-server` cli option or
-`RA_MUX_SERVER` environment variable. You can usually configure one of these in
-your editor configuration. If both are specified the cli option overrides the
-environment variable.
+By default `ra-multiplex` uses a `rust-analyzer` binary found in its `$PATH`
+as the server. This can be overridden using the `--server-path` cli option with
+the client subcommand or `RA_MUX_SERVER` environment variable. You can usually
+configure one of these in your editor configuration. If both are specified the
+cli option overrides the environment variable.
 
 For example with `coc-clangd` in CoC for neovim add to
 `~/.config/nvim/coc-settings.json`:
@@ -147,7 +141,7 @@ For example with `coc-clangd` in CoC for neovim add to
 ```json
 {
     "clangd.path": "/home/user/.cargo/bin/ra-multiplex",
-    "clangd.arguments": ["client", "--ra-mux-server", "/usr/bin/clangd"]
+    "clangd.arguments": ["client", "--server-path", "/usr/bin/clangd"]
 }
 ```
 
@@ -168,7 +162,7 @@ need a script like `/usr/local/bin/clangd-proxy`:
 
 ```sh
 #!/bin/sh
-RA_MUX_SERVER=/usr/bin/clangd exec /home/user/.cargo/bin/ra-multiplex client --ra-mux-server /usr/bin/clangd $@
+RA_MUX_SERVER=/usr/bin/clangd exec /home/user/.cargo/bin/ra-multiplex client --server-path /usr/bin/clangd $@
 ```
 
 And configure the editor to use the wrapper script in
