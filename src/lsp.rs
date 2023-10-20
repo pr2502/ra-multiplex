@@ -98,16 +98,11 @@ pub struct WorkspaceFolder {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LspMuxOptions {
-    /// Version number of the ra-multiplex binary
+    /// Version number of the protocol
     ///
-    /// Version is for now naively checked for equality, the server will refuse
-    /// connections to mismatched clients.
-    ///
-    /// If you're using ra-multiplex just make sure you're using the same build
-    /// for both the proxy and server, restarting the server if you've upgraded.
-    ///
-    /// If you're connecting directly from a client make sure to set the same
-    /// protocol version reported by `ra-multiplex --version`.
+    /// Version is for now naively checked for equality with
+    /// [`PROTOCOL_VERSION`](LspMuxOptions::PROTOCOL_VERSION), the server will
+    /// refuse connections to mismatched clients.
     pub version: String,
 
     #[serde(flatten)]
