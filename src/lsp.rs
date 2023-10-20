@@ -110,22 +110,40 @@ pub struct LspMuxOptions {
     /// protocol version reported by `ra-multiplex --version`.
     pub version: String,
 
-    /// The language server to run
+    #[serde(flatten)]
+    pub method: LspMuxMethod,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "method")]
+#[serde(rename_all = "camelCase")]
+pub enum LspMuxMethod {
+    Connect {
+        /// The language server to run
+        ///
+        /// Can be either an absolute path like `/usr/local/bin/rust-analyzer` or a
+        /// plain name like `rust-analyzer` which will then be resolved according to
+        /// the *server's* path.
+        server: String,
+
+        /// Arguments which will be passed to the language server, defaults to an
+        /// empty list if omited.
+        #[serde(default = "Vec::new")]
+        args: Vec<String>,
+
+        /// Current working directory of the proxy command. This is only used as
+        /// fallback if the client doesn't provide any workspace root.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+}
+
+impl LspMuxOptions {
+    /// Protocol version
     ///
-    /// Can be either an absolute path like `/usr/local/bin/rust-analyzer` or a
-    /// plain name like `rust-analyzer` which will then be resolved according to
-    /// the *server's* path.
-    pub server: String,
-
-    /// Arguments which will be passed to the language server, defaults to an
-    /// empty list if omited.
-    #[serde(default = "Vec::new")]
-    pub args: Vec<String>,
-
-    /// Current working directory of the proxy command. This is only used as
-    /// fallback if the client doesn't provide any workspace root.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
+    /// This doesn't match the crate version, it starts at `"1"` and will only
+    /// increase if we make a backwards-incompatible change.
+    pub const PROTOCOL_VERSION: &'static str = "1";
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -165,6 +183,7 @@ mod tests {
         test::<InitializationOptions>(json!({
             "lspMux": {
                 "version": "1",
+                "method": "connect",
                 "server": "some-language-server",
                 "args": ["a", "b", "c"],
                 "cwd": "/home/user",
@@ -177,6 +196,7 @@ mod tests {
         test::<InitializationOptions>(json!({
             "lspMux": {
                 "version": "1",
+                "method": "connect",
                 "server": "some-language-server",
                 "args": ["a", "b", "c"],
             },
@@ -195,6 +215,19 @@ mod tests {
     fn missing_version() {
         test::<InitializationOptions>(json!({
             "lspMux": {
+                "method": "connect",
+                "server": "some-language-server",
+                "args": ["a", "b", "c"],
+            },
+        }))
+    }
+
+    #[test]
+    #[should_panic = "missing field `method`"]
+    fn missing_method() {
+        test::<InitializationOptions>(json!({
+            "lspMux": {
+                "version": "1",
                 "server": "some-language-server",
                 "args": ["a", "b", "c"],
             },
@@ -207,6 +240,7 @@ mod tests {
         test::<InitializationOptions>(json!({
             "lspMux": {
                 "version": "1",
+                "method": "connect",
                 "args": ["a", "b", "c"],
             },
         }))

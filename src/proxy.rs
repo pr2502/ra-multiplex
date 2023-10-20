@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use crate::config::Config;
 use crate::lsp::jsonrpc::Message;
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::{InitializationOptions, InitializeParams, LspMuxOptions};
+use crate::lsp::{InitializationOptions, InitializeParams, LspMuxMethod, LspMuxOptions};
 
 pin_project! {
     struct Stdio {
@@ -57,7 +57,6 @@ pub async fn run(server: String, args: Vec<String>) -> Result<()> {
     let cwd = env::current_dir()
         .ok()
         .and_then(|path| path.to_str().map(String::from));
-    let version = String::from("test"); // TODO use a real protocol version number
 
     let mut stream = TcpStream::connect(config.connect)
         .await
@@ -79,10 +78,8 @@ pub async fn run(server: String, args: Vec<String>) -> Result<()> {
         .get_or_insert_with(InitializationOptions::default)
         .lsp_mux
         .get_or_insert_with(|| LspMuxOptions {
-            version,
-            server,
-            args,
-            cwd,
+            version: LspMuxOptions::PROTOCOL_VERSION.to_owned(),
+            method: LspMuxMethod::Connect { server, args, cwd },
         });
     req.params = serde_json::to_value(params).expect("BUG: invalid data");
 

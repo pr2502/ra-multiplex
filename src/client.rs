@@ -1,7 +1,7 @@
 use std::io::ErrorKind;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -12,9 +12,9 @@ use tracing::{debug, error, info, warn, Instrument};
 use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
-use crate::lsp::jsonrpc::{Message, RequestId, ResponseSuccess, Version};
+use crate::lsp::jsonrpc::{Message, Request, RequestId, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::InitializeParams;
+use crate::lsp::{InitializeParams, LspMuxMethod, LspMuxOptions};
 
 /// Finds or spawns a language server instance and connects the client
 pub async fn process(
@@ -24,7 +24,7 @@ pub async fn process(
 ) -> Result<()> {
     let (socket_read, socket_write) = socket.into_split();
     let mut reader = LspReader::new(BufReader::new(socket_read), "client");
-    let mut writer = LspWriter::new(socket_write, "client");
+    let writer = LspWriter::new(socket_write, "client");
 
     // Read the first client message, this must be `initialize` request.
     let req = match reader
@@ -36,7 +36,7 @@ pub async fn process(
         Message::Request(req) if req.method == "initialize" => req,
         _ => bail!("first client message was not `initialize` request"),
     };
-    let mut init_params = serde_json::from_value::<InitializeParams>(req.params)
+    let mut init_params = serde_json::from_value::<InitializeParams>(req.params.clone())
         .context("parse `initialize` request params")?;
 
     // Remove `lspMux` from `initializationOptions`, it's ra-multiplex extension
@@ -48,11 +48,41 @@ pub async fn process(
         .lsp_mux
         .take()
         .context("missing `lspMux` in `initializationOptions` in `initialize` request")?;
-    // TODO verify protocol version
+    ensure!(
+        options.version == LspMuxOptions::PROTOCOL_VERSION,
+        "unsupported protocol version {:?}, expected {:?}",
+        &options.version,
+        LspMuxOptions::PROTOCOL_VERSION,
+    );
 
+    match options.method {
+        LspMuxMethod::Connect { server, args, cwd } => {
+            connect(
+                port,
+                instance_map,
+                (server, args, cwd),
+                req,
+                init_params,
+                reader,
+                writer,
+            )
+            .await
+        }
+    }
+}
+
+async fn connect(
+    port: u16,
+    instance_map: Arc<Mutex<InstanceMap>>,
+    (server, args, cwd): (String, Vec<String>, Option<String>),
+    req: Request,
+    init_params: InitializeParams,
+    mut reader: LspReader<BufReader<OwnedReadHalf>>,
+    mut writer: LspWriter<OwnedWriteHalf>,
+) -> Result<()> {
     // Select the workspace root directory.
     let workspace_root = {
-        let (scheme, _, mut path, _, _) = select_workspace_root(&init_params)
+        let (scheme, _, mut path, _, _) = select_workspace_root(&init_params, cwd.as_deref())
             .context("could not get any workspace_root")?
             .into_parts();
         if scheme != uriparse::Scheme::File {
@@ -64,8 +94,8 @@ pub async fn process(
 
     // Get an language server instance for this client.
     let key = InstanceKey {
-        server: options.server,
-        args: options.args,
+        server,
+        args,
         workspace_root,
     };
     let instance = instance::get_or_spawn(instance_map, key, init_params).await?;
@@ -110,7 +140,10 @@ pub async fn process(
     Ok(())
 }
 
-fn select_workspace_root(init_params: &InitializeParams) -> Result<URI> {
+fn select_workspace_root<'a>(
+    init_params: &'a InitializeParams,
+    proxy_cwd: Option<&'a str>,
+) -> Result<URI<'a>> {
     if init_params.workspace_folders.len() > 1 {
         // TODO Ideally we'd be looking up any server which has a superset of
         // workspace folders active possibly adding transforming the `initialize`
@@ -157,13 +190,8 @@ fn select_workspace_root(init_params: &InitializeParams) -> Result<URI> {
     }
 
     // Using the proxy `cwd` as fallback
-    if let Some(proxy_cwd) = init_params
-        .initialization_options
-        .as_ref()
-        .and_then(|opts| opts.lsp_mux.as_ref())
-        .and_then(|lsp_mux| lsp_mux.cwd.as_ref())
-    {
-        match uriparse::Path::try_from(proxy_cwd.as_str())
+    if let Some(proxy_cwd) = proxy_cwd {
+        match uriparse::Path::try_from(proxy_cwd)
             .map_err(uriparse::URIError::from)
             .and_then(|path| {
                 URI::builder()
