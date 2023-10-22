@@ -157,6 +157,30 @@ impl fmt::Debug for Message {
     }
 }
 
+#[derive(Debug)]
+pub struct NotResponseError(pub Message);
+
+impl Message {
+    pub fn into_response(self) -> Result<Result<ResponseSuccess, ResponseError>, NotResponseError> {
+        match self {
+            Message::ResponseSuccess(success) => Ok(Ok(success)),
+            Message::ResponseError(error) => Ok(Err(error)),
+            other => Err(NotResponseError(other)),
+        }
+    }
+}
+
+impl fmt::Display for NotResponseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "expected Response* Message found {msg:?}",
+            msg = &self.0,
+        ))
+    }
+}
+
+impl std::error::Error for NotResponseError {}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{from_value, json, to_value, Value};

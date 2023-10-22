@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 
 use crate::config::Config;
 use crate::lsp::jsonrpc::Message;
-use crate::lsp::lspmux::{LspMuxMethod, LspMuxOptions};
+use crate::lsp::lspmux::{LspMuxOptions, Request};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{InitializationOptions, InitializeParams};
 
@@ -80,12 +80,12 @@ pub async fn run(server: String, args: Vec<String>) -> Result<()> {
         .lsp_mux
         .get_or_insert_with(|| LspMuxOptions {
             version: LspMuxOptions::PROTOCOL_VERSION.to_owned(),
-            method: LspMuxMethod::Connect { server, args, cwd },
+            method: Request::Connect { server, args, cwd },
         });
     req.params = serde_json::to_value(params).expect("BUG: invalid data");
 
     // Forward the modified `initialize` request.
-    let mut writer = LspWriter::new(&mut stream, "server");
+    let mut writer = LspWriter::new(&mut stream, "lspmux");
     writer
         .write_message(&req.into())
         .await

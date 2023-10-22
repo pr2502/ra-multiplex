@@ -15,12 +15,12 @@ windows) to share a single `rust-analyzer` instance per cargo workspace.
 Depending on the `workspaceFolders` provided by your editor during
 initialization it can reuse an already spawned `rust-analyzer` instance.
  
-Because neither LSP nor `rust-analyzer` itself support multiple clients per
-server `ra-multiplex` intercepts the handshake process modifies IDs of requests
-& responses to track which response belongs to which client. Because not all
-messages can be tracked this way it drops some, notably it drops any requests
-from the server, this appears to not be a problem with `coc-rust-analyzer` in
-neovim but YMMV.
+Because neither LSP nor `rust-analyzer` itself support multiple clients
+per server `ra-multiplex` intercepts the handshake process and modifies IDs
+of requests and responses to track which response belongs to which client.
+Because not all messages can be tracked this way it drops some, notably it
+drops any requests from the server, this appears to not be a problem with
+`coc-rust-analyzer` in neovim but YMMV.
 
 If you have any problems you're welcome to open issues on this repository.
 

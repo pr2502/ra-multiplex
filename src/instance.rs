@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
 use tracing::{debug, error, field, info, instrument, warn, Instrument};
 
+use crate::client::Client;
 use crate::config::Config;
 use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
@@ -42,7 +43,7 @@ pub struct Instance {
     server: mpsc::Sender<Message>,
 
     /// Send messages to clients
-    clients: Mutex<HashMap<u16, mpsc::Sender<Message>>>,
+    clients: Mutex<HashMap<u16, Client>>,
 
     /// Wakes up `wait_task` and asks it to send SIGKILL to the instance.
     close: Notify,
@@ -80,13 +81,13 @@ impl Instance {
         self.init_result.clone()
     }
 
-    pub async fn add_client(&self, port: u16, channel: mpsc::Sender<Message>) {
-        if self.clients.lock().await.insert(port, channel).is_some() {
+    pub async fn add_client(&self, port: u16, client: Client) {
+        if self.clients.lock().await.insert(port, client).is_some() {
             unreachable!("BUG: added two clients with the same port");
         }
     }
 
-    /// Send a message to the language server instance
+    /// Send a message to the language server channel
     pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
         self.server.send(message).await
     }
@@ -107,7 +108,7 @@ impl InstanceMap {
     }
 }
 
-/// Periodically checks for for idle language server instances
+/// Periodically check for for idle language server instances
 #[instrument("garbage collector", skip_all)]
 async fn gc_task(
     instance_map: Arc<Mutex<InstanceMap>>,
@@ -127,7 +128,7 @@ async fn gc_task(
             // removed when a message is sent to them which might leave them
             // hanging forever if the language server is quiet and cause the
             // GC to never trigger.
-            message_readers.retain(|_port, sender| !sender.is_closed());
+            message_readers.retain(|_port, client| client.is_connected());
 
             let idle = instance.idle();
             debug!(path = ?key.workspace_root, idle, readers = message_readers.len(), "check instance");
@@ -143,7 +144,7 @@ async fn gc_task(
     }
 }
 
-/// Find an existing or spawn a new language server instance
+/// Find existing or spawn a new language server instance
 ///
 /// The instance is looked up based on `instance_key`. If an existing one is
 /// found then it's returned and `init_req_params` are discarded. If it's
@@ -214,8 +215,6 @@ async fn spawn(
         .context("server handshake")?;
 
     info!("initialized server");
-
-    // TODO spawn stdin, stdout and wait tasks
 
     let (message_writer, rx) = mpsc::channel(64);
 
@@ -311,7 +310,7 @@ async fn stderr_task(stderr: ChildStderr) {
     }
 }
 
-/// Read messages sent by clients from a channel and write them into language server stdin
+/// Receive messages from clients' channel and write them into language server stdin
 async fn stdin_task(mut receiver: mpsc::Receiver<Message>, mut writer: LspWriter<ChildStdin>) {
     // Because we (stdin task) don't keep a reference to `self` it will be dropped when the
     // child closes and all the clients disconnect including the sender and this receiver
@@ -332,7 +331,7 @@ async fn stdin_task(mut receiver: mpsc::Receiver<Message>, mut writer: LspWriter
     debug!("stdin closed");
 }
 
-/// Wait for child and logs when it exits
+/// Wait for child and log when it exits
 async fn wait_task(
     instance: Arc<Instance>,
     key: InstanceKey,
@@ -403,7 +402,7 @@ fn parse_tagged_id(tagged: &RequestId) -> Option<(u16, RequestId)> {
     }
 }
 
-/// Read messages from server stdout and distribute them to client channels
+/// Read messages from server stdout and send them to corresponding client channels
 async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<ChildStdout>>) {
     loop {
         let message = match reader.read_message().await {
@@ -418,14 +417,14 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
         };
 
-        // Locked after we have a message to send
+        // Lock _after_ we have a message to send, then send and immediately release the lock
         let message_readers = instance.clients.lock().await;
         match message {
             Message::ResponseSuccess(mut res) => {
                 if let Some((port, id)) = parse_tagged_id(&res.id) {
                     res.id = id;
                     if let Some(sender) = message_readers.get(&port) {
-                        let _ignore = sender.send(res.into()).await;
+                        let _ignore = sender.send_message(res.into()).await;
                     } else {
                         debug!(?port, "no client");
                     }
@@ -436,7 +435,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 if let Some((port, id)) = parse_tagged_id(&res.id) {
                     res.id = id;
                     if let Some(sender) = message_readers.get(&port) {
-                        let _ignore = sender.send(res.into()).await;
+                        let _ignore = sender.send_message(res.into()).await;
                     } else {
                         debug!(?port, "no client");
                     }
@@ -470,9 +469,9 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
 
             Message::Notification(notif) => {
-                // Notification are sent to all clients
+                // Send notifications to all clients
                 for sender in message_readers.values() {
-                    let _ignore = sender.send(notif.clone().into()).await;
+                    let _ignore = sender.send_message(notif.clone().into()).await;
                 }
             }
         }

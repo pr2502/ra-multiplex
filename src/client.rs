@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex};
 use tokio::{select, task};
 use tracing::{debug, error, info, warn, Instrument};
@@ -13,11 +14,11 @@ use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
 use crate::lsp::jsonrpc::{Message, Request, RequestId, ResponseSuccess, Version};
-use crate::lsp::lspmux::{LspMuxMethod, LspMuxOptions};
+use crate::lsp::lspmux::{self, LspMuxOptions};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::InitializeParams;
 
-/// Finds or spawns a language server instance and connects the client
+/// Read first client message and dispatch lsp mux commands
 pub async fn process(
     socket: TcpStream,
     port: u16,
@@ -57,7 +58,7 @@ pub async fn process(
     );
 
     match options.method {
-        LspMuxMethod::Connect { server, args, cwd } => {
+        lspmux::Request::Connect { server, args, cwd } => {
             connect(
                 port,
                 instance_map,
@@ -69,9 +70,27 @@ pub async fn process(
             )
             .await
         }
+        lspmux::Request::Status {} => todo!(),
+        lspmux::Request::Stop { cwd, dry_run } => todo!(),
     }
 }
 
+pub struct Client {
+    sender: mpsc::Sender<Message>,
+}
+
+impl Client {
+    pub fn is_connected(&self) -> bool {
+        !self.sender.is_closed()
+    }
+
+    /// Send a message to the client channel
+    pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
+        self.sender.send(message).await
+    }
+}
+
+/// Find or spawn a language server instance and connect the client to it
 async fn connect(
     port: u16,
     instance_map: Arc<Mutex<InstanceMap>>,
@@ -134,7 +153,9 @@ async fn connect(
     let (client_tx, client_rx) = mpsc::channel(64);
     let (close_tx, close_rx) = mpsc::channel(1);
     task::spawn(input_task(client_rx, close_rx, writer).in_current_span());
-    instance.add_client(port, client_tx.clone()).await;
+    instance
+        .add_client(port, Client { sender: client_tx })
+        .await;
 
     task::spawn(output_task(reader, port, instance, close_tx).in_current_span());
 
@@ -210,7 +231,7 @@ fn select_workspace_root<'a>(
     bail!("could not determine a suitable workspace_root");
 }
 
-/// Receives messages from a channel and writes tem to the client input socket
+/// Receive messages from channel and write them to the client input socket
 async fn input_task(
     mut rx: mpsc::Receiver<Message>,
     mut close_rx: mpsc::Receiver<Message>,
@@ -253,8 +274,7 @@ fn tag_id(port: u16, id: &RequestId) -> RequestId {
     })
 }
 
-/// Reads from client socket and tags the id for requests, forwards the messages into a mpsc queue
-/// to the writer
+/// Read messages from client output socket and send them to the server channel
 async fn output_task(
     mut reader: LspReader<BufReader<OwnedReadHalf>>,
     port: u16,
