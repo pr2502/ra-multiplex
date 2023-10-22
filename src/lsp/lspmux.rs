@@ -12,13 +12,22 @@ pub struct LspMuxOptions {
     pub version: String,
 
     #[serde(flatten)]
-    pub method: LspMuxMethod,
+    pub method: Request,
+}
+
+impl LspMuxOptions {
+    /// Protocol version
+    ///
+    /// This doesn't match the crate version, it starts at `"1"` and will only
+    /// increase if we make a backwards-incompatible change.
+    pub const PROTOCOL_VERSION: &'static str = "1";
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "method")]
 #[serde(rename_all = "camelCase")]
-pub enum LspMuxMethod {
+pub enum Request {
+    /// Connect to a language server
     Connect {
         /// The language server to run
         ///
@@ -37,14 +46,46 @@ pub enum LspMuxMethod {
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    /// Returns instances and connected clients
+    Status {},
+    /// Stop an instance
+    Stop {
+        /// Stops an instance with the longest path where
+        /// `workspace_root.starts_with(cwd)` is true
+        cwd: String,
+
+        /// Only returns which instance would be stopped
+        dry_run: bool,
+    },
 }
 
-impl LspMuxOptions {
-    /// Protocol version
-    ///
-    /// This doesn't match the crate version, it starts at `"1"` and will only
-    /// increase if we make a backwards-incompatible change.
-    pub const PROTOCOL_VERSION: &'static str = "1";
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusResponse {
+    pub instances: Vec<Instance>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Instance {
+    pub pid: u32,
+    pub server: String,
+    pub args: Vec<String>,
+    pub workspace_root: String,
+    pub last_used: i64,
+    pub clients: Vec<Client>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Client {
+    pub port: u16,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StopResponse {
+    pub instance: Instance,
 }
 
 #[cfg(test)]

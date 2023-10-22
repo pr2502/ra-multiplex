@@ -1,11 +1,3 @@
-//! # LSP Multiplexer
-//! Some LSP clients are not very smart about spawning the servers, for example coc-rust-analyzer
-//! in neovim will spawn a new rust-analyzer instance per neovim instance, unfortunately this
-//! wastes a _lot_ of resources.
-//!
-//! LSP Multiplexer attempts to solve this problem by spawning a single rust-analyzer instance per
-//! cargo workspace and routing the messages through TCP to multiple clients.
-
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::task;
