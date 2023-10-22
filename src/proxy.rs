@@ -9,8 +9,9 @@ use tokio::net::TcpStream;
 
 use crate::config::Config;
 use crate::lsp::jsonrpc::Message;
+use crate::lsp::lspmux::{LspMuxMethod, LspMuxOptions};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::{InitializationOptions, InitializeParams, LspMuxMethod, LspMuxOptions};
+use crate::lsp::{InitializationOptions, InitializeParams};
 
 pin_project! {
     struct Stdio {

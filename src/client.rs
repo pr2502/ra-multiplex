@@ -13,8 +13,9 @@ use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
 use crate::lsp::jsonrpc::{Message, Request, RequestId, ResponseSuccess, Version};
+use crate::lsp::lspmux::{LspMuxMethod, LspMuxOptions};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::{InitializeParams, LspMuxMethod, LspMuxOptions};
+use crate::lsp::InitializeParams;
 
 /// Finds or spawns a language server instance and connects the client
 pub async fn process(

@@ -31,6 +31,7 @@
 use serde_derive::{Deserialize, Serialize};
 
 pub mod jsonrpc;
+pub mod lspmux;
 pub mod transport;
 
 /// Params for the `initialize` request
@@ -76,7 +77,7 @@ pub struct ClientInfo {
 #[serde(rename_all = "camelCase")]
 pub struct InitializationOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lsp_mux: Option<LspMuxOptions>,
+    pub lsp_mux: Option<lspmux::LspMuxOptions>,
 
     #[serde(flatten)]
     pub other_options: serde_json::Map<String, serde_json::Value>,
@@ -97,51 +98,6 @@ pub struct WorkspaceFolder {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct LspMuxOptions {
-    /// Version number of the protocol
-    ///
-    /// Version is for now naively checked for equality with
-    /// [`PROTOCOL_VERSION`](LspMuxOptions::PROTOCOL_VERSION), the server will
-    /// refuse connections to mismatched clients.
-    pub version: String,
-
-    #[serde(flatten)]
-    pub method: LspMuxMethod,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(tag = "method")]
-#[serde(rename_all = "camelCase")]
-pub enum LspMuxMethod {
-    Connect {
-        /// The language server to run
-        ///
-        /// Can be either an absolute path like `/usr/local/bin/rust-analyzer` or a
-        /// plain name like `rust-analyzer` which will then be resolved according to
-        /// the *server's* path.
-        server: String,
-
-        /// Arguments which will be passed to the language server, defaults to an
-        /// empty list if omited.
-        #[serde(default = "Vec::new")]
-        args: Vec<String>,
-
-        /// Current working directory of the proxy command. This is only used as
-        /// fallback if the client doesn't provide any workspace root.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cwd: Option<String>,
-    },
-}
-
-impl LspMuxOptions {
-    /// Protocol version
-    ///
-    /// This doesn't match the crate version, it starts at `"1"` and will only
-    /// increase if we make a backwards-incompatible change.
-    pub const PROTOCOL_VERSION: &'static str = "1";
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
     capabilities: serde_json::Value,
@@ -154,90 +110,4 @@ pub struct InitializeResult {
 pub struct ServerInfo {
     name: String,
     version: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use serde::de::DeserializeOwned;
-    use serde::Serialize;
-    use serde_json::{from_value, json, to_value, Value};
-
-    use super::*;
-
-    fn test<T>(input: Value)
-    where
-        T: Serialize + DeserializeOwned,
-    {
-        let deserialized = from_value::<T>(input.clone()).expect("failed to deserialize");
-        let serialized = to_value(&deserialized).expect("failed to serialize");
-        assert_eq!(input, serialized);
-    }
-
-    #[test]
-    fn lsp_mux_only() {
-        test::<InitializationOptions>(json!({
-            "lspMux": {
-                "version": "1",
-                "method": "connect",
-                "server": "some-language-server",
-                "args": ["a", "b", "c"],
-                "cwd": "/home/user",
-            }
-        }))
-    }
-
-    #[test]
-    fn lsp_mux_and_other_stuff() {
-        test::<InitializationOptions>(json!({
-            "lspMux": {
-                "version": "1",
-                "method": "connect",
-                "server": "some-language-server",
-                "args": ["a", "b", "c"],
-            },
-            "lsp_mux": "not the right key",
-            "lspmux": "also not it",
-            "lsp mux": "wrong one",
-            "a": 1,
-            "b": null,
-            "c": {},
-            "d": [],
-        }))
-    }
-
-    #[test]
-    #[should_panic = "missing field `version`"]
-    fn missing_version() {
-        test::<InitializationOptions>(json!({
-            "lspMux": {
-                "method": "connect",
-                "server": "some-language-server",
-                "args": ["a", "b", "c"],
-            },
-        }))
-    }
-
-    #[test]
-    #[should_panic = "missing field `method`"]
-    fn missing_method() {
-        test::<InitializationOptions>(json!({
-            "lspMux": {
-                "version": "1",
-                "server": "some-language-server",
-                "args": ["a", "b", "c"],
-            },
-        }))
-    }
-
-    #[test]
-    #[should_panic = "missing field `server`"]
-    fn missing_server() {
-        test::<InitializationOptions>(json!({
-            "lspMux": {
-                "version": "1",
-                "method": "connect",
-                "args": ["a", "b", "c"],
-            },
-        }))
-    }
 }
