@@ -7,11 +7,4 @@ require'lspconfig'.rust_analyzer.setup {
       server = "rust-analyzer",
     },
   },
-  settings = {
-    ['rust-analyzer'] = {
-      checkOnSave = {
-        command = "clippy",
-      },
-    }
-  }
 }
