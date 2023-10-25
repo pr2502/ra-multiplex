@@ -118,7 +118,7 @@ async fn gc_task(
     loop {
         interval.tick().await;
 
-        for (key, instance) in instance_map.lock().await.0.iter() {
+        for (key, instance) in &instance_map.lock().await.0 {
             let mut message_readers = instance.clients.lock().await;
 
             // Remove closed senders
