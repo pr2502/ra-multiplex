@@ -81,7 +81,7 @@ impl Instance {
     }
 
     pub async fn add_client(&self, port: u16, channel: mpsc::Sender<Message>) {
-        if let Some(_) = self.clients.lock().await.insert(port, channel) {
+        if self.clients.lock().await.insert(port, channel).is_some() {
             unreachable!("BUG: added two clients with the same port");
         }
     }
