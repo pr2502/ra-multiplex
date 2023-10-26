@@ -70,16 +70,21 @@ pub async fn process(
             )
             .await
         }
-        lspmux::Request::Status {} => todo!(),
-        lspmux::Request::Stop { cwd, dry_run } => todo!(),
+        lspmux::Request::Status {} => status(instance_map, writer).await,
+        lspmux::Request::Stop { cwd: _, dry_run: _ } => todo!(),
     }
 }
 
 pub struct Client {
+    port: u16,
     sender: mpsc::Sender<Message>,
 }
 
 impl Client {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     pub fn is_connected(&self) -> bool {
         !self.sender.is_closed()
     }
@@ -88,6 +93,27 @@ impl Client {
     pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
         self.sender.send(message).await
     }
+
+    pub fn get_status(&self) -> lspmux::Client {
+        lspmux::Client { port: self.port }
+    }
+}
+
+async fn status(
+    instance_map: Arc<Mutex<InstanceMap>>,
+    mut writer: LspWriter<OwnedWriteHalf>,
+) -> Result<()> {
+    let status = task::spawn_blocking(move || instance_map.blocking_lock().get_status())
+        .await
+        .unwrap();
+    writer
+        .write_message(&Message::ResponseSuccess(ResponseSuccess {
+            jsonrpc: Version,
+            result: serde_json::to_value(status).unwrap(),
+            id: RequestId::Number(0),
+        }))
+        .await
+        .context("writing response")
 }
 
 /// Find or spawn a language server instance and connect the client to it
@@ -154,7 +180,10 @@ async fn connect(
     let (close_tx, close_rx) = mpsc::channel(1);
     task::spawn(input_task(client_rx, close_rx, writer).in_current_span());
     instance
-        .add_client(port, Client { sender: client_tx })
+        .add_client(Client {
+            port,
+            sender: client_tx,
+        })
         .await;
 
     task::spawn(output_task(reader, port, instance, close_tx).in_current_span());
