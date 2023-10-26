@@ -19,7 +19,7 @@ use crate::client::Client;
 use crate::config::Config;
 use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::{InitializeParams, InitializeResult};
+use crate::lsp::{lspmux, InitializeParams, InitializeResult};
 
 /// Specifies server configuration
 ///
@@ -33,6 +33,8 @@ pub struct InstanceKey {
 
 /// Language server instance
 pub struct Instance {
+    key: InstanceKey,
+
     /// Language server child process id
     pid: u32,
 
@@ -81,8 +83,14 @@ impl Instance {
         self.init_result.clone()
     }
 
-    pub async fn add_client(&self, port: u16, client: Client) {
-        if self.clients.lock().await.insert(port, client).is_some() {
+    pub async fn add_client(&self, client: Client) {
+        if self
+            .clients
+            .lock()
+            .await
+            .insert(client.port(), client)
+            .is_some()
+        {
             unreachable!("BUG: added two clients with the same port");
         }
     }
@@ -90,6 +98,22 @@ impl Instance {
     /// Send a message to the language server channel
     pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
         self.server.send(message).await
+    }
+
+    pub fn get_status(&self) -> lspmux::Instance {
+        lspmux::Instance {
+            pid: self.pid,
+            server: self.key.server.clone(),
+            args: self.key.args.clone(),
+            workspace_root: self.key.workspace_root.clone(),
+            last_used: self.last_used.load(Ordering::Relaxed),
+            clients: self
+                .clients
+                .blocking_lock()
+                .values()
+                .map(|client| client.get_status())
+                .collect(),
+        }
     }
 }
 
@@ -105,6 +129,16 @@ impl InstanceMap {
             config.instance_timeout,
         ));
         instance_map
+    }
+
+    pub fn get_status(&self) -> lspmux::StatusResponse {
+        lspmux::StatusResponse {
+            instances: self
+                .0
+                .values()
+                .map(|instance| instance.get_status())
+                .collect(),
+        }
     }
 }
 
@@ -219,6 +253,7 @@ async fn spawn(
     let (message_writer, rx) = mpsc::channel(64);
 
     let instance = Arc::new(Instance {
+        key,
         pid,
         init_result,
         server: message_writer,
@@ -230,7 +265,7 @@ async fn spawn(
     task::spawn(stdout_task(instance.clone(), reader).in_current_span());
     task::spawn(stdin_task(rx, writer).in_current_span());
 
-    task::spawn(wait_task(instance.clone(), key, map, child).in_current_span());
+    task::spawn(wait_task(instance.clone(), map, child).in_current_span());
 
     Ok(instance)
 }
@@ -334,10 +369,10 @@ async fn stdin_task(mut receiver: mpsc::Receiver<Message>, mut writer: LspWriter
 /// Wait for child and log when it exits
 async fn wait_task(
     instance: Arc<Instance>,
-    key: InstanceKey,
     instance_map: Arc<Mutex<InstanceMap>>,
     mut child: Child,
 ) {
+    let key = instance.key.clone();
     loop {
         select! {
             _ = instance.close.notified() => {

@@ -1,6 +1,6 @@
 use std::env;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use ra_multiplex::{ext, proxy, server};
 
 #[derive(Parser, Debug)]

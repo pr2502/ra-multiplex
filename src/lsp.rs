@@ -57,12 +57,12 @@ pub struct InitializeParams {
     /// should remove them again before forwarding them to the language server.
     pub initialization_options: Option<InitializationOptions>,
 
-    pub capabilities: serde_json::Value,
+    pub capabilities: Option<serde_json::Value>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<TraceValue>,
 
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default = "Vec::new")]
     pub workspace_folders: Vec<WorkspaceFolder>,
 }
 

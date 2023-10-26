@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::lsp::jsonrpc::{Message, Request, RequestId, Version};
 use crate::lsp::lspmux::{self, LspMuxOptions, StatusResponse};
 use crate::lsp::transport::{LspReader, LspWriter};
+use crate::lsp::{InitializationOptions, InitializeParams};
 
 pub async fn ext_request<T>(method: lspmux::Request) -> Result<T>
 where
@@ -31,9 +32,22 @@ where
             &Request {
                 jsonrpc: Version,
                 method: "initialize".into(),
-                params: serde_json::to_value(LspMuxOptions {
-                    version: LspMuxOptions::PROTOCOL_VERSION.into(),
-                    method,
+                params: serde_json::to_value(InitializeParams {
+                    initialization_options: Some(InitializationOptions {
+                        lsp_mux: Some(LspMuxOptions {
+                            version: LspMuxOptions::PROTOCOL_VERSION.into(),
+                            method,
+                        }),
+                        other_options: serde_json::Map::default(),
+                    }),
+                    process_id: None,
+                    client_info: None,
+                    locale: None,
+                    root_path: None,
+                    root_uri: None,
+                    capabilities: None,
+                    trace: None,
+                    workspace_folders: Vec::new(),
                 })
                 .unwrap(),
                 id: RequestId::Number(0),
