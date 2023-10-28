@@ -47,6 +47,8 @@ Usage: ra-multiplex [COMMAND]
 Commands:
   client  Connect to a ra-mux server [default]
   server  Start a ra-mux server
+  status  Print server status
+  reload  Reload workspace
   help    Print this message or the help of the given subcommand(s)
 
 Options:
