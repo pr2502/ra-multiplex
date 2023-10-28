@@ -46,16 +46,18 @@ pub enum Request {
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
-    /// Returns instances and connected clients
-    Status {},
-    /// Stop an instance
-    Stop {
-        /// Stops an instance with the longest path where
-        /// `workspace_root.starts_with(cwd)` is true
-        cwd: String,
 
-        /// Only returns which instance would be stopped
-        dry_run: bool,
+    /// List instances and connected clients
+    Status {},
+
+    /// Reload an instance
+    ///
+    /// For rust-analyzer send the `rust-analyzer/reloadWorkspace` extension request.
+    /// Do nothing for other language servers.
+    Reload {
+        /// Selects instance with the longest path where
+        /// `cwd.starts_with(workspace_root)` is true
+        cwd: String,
     },
 }
 
