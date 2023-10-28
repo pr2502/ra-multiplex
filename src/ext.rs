@@ -1,7 +1,7 @@
 use std::env;
 
 use anyhow::{bail, Context, Result};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
 
@@ -64,15 +64,32 @@ where
     {
         Ok(success) => serde_json::from_value(success.result).context("parse response result"),
         Err(error) => bail!(
-            "unexpected error response {msg:?}",
+            "received error response: {msg:?}",
             msg = Message::ResponseError(error),
         ),
     }
 }
 
-pub async fn status() -> Result<()> {
+pub async fn status(json: bool) -> Result<()> {
     let res = ext_request::<StatusResponse>(ext::Request::Status {}).await?;
-    dbg!(res);
+
+    if json {
+        let json = serde_json::to_string(&res).unwrap();
+        println!("{json}");
+        return Ok(());
+    }
+
+    for instance in res.instances {
+        println!("- Instance pid {}", instance.pid);
+        println!("  server: {:?} {:?}", instance.server, instance.args);
+        println!("  path: {:?}", instance.workspace_root);
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        println!("  last used: {}s ago", now - instance.last_used);
+        println!("  clients:");
+        for client in instance.clients {
+            println!("  - Client port {}", client.port);
+        }
+    }
     Ok(())
 }
 
@@ -82,8 +99,6 @@ pub async fn reload() -> Result<()> {
         .to_str()
         .context("current_dir is not valid utf-8")?
         .to_owned();
-
-    let res = ext_request::<serde_json::Value>(ext::Request::Reload { cwd }).await?;
-    dbg!(res);
+    ext_request::<IgnoredAny>(ext::Request::Reload { cwd }).await?;
     Ok(())
 }
