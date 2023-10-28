@@ -13,8 +13,8 @@ use tracing::{debug, error, info, warn, Instrument};
 use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
+use crate::lsp::ext::{self, LspMuxOptions};
 use crate::lsp::jsonrpc::{Message, Request, RequestId, ResponseSuccess, Version};
-use crate::lsp::lspmux::{self, LspMuxOptions};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::InitializeParams;
 
@@ -58,7 +58,7 @@ pub async fn process(
     );
 
     match options.method {
-        lspmux::Request::Connect { server, args, cwd } => {
+        ext::Request::Connect { server, args, cwd } => {
             connect(
                 port,
                 instance_map,
@@ -70,8 +70,8 @@ pub async fn process(
             )
             .await
         }
-        lspmux::Request::Status {} => status(instance_map, writer).await,
-        lspmux::Request::Stop { cwd: _, dry_run: _ } => todo!(),
+        ext::Request::Status {} => status(instance_map, writer).await,
+        ext::Request::Stop { cwd: _, dry_run: _ } => todo!(),
     }
 }
 
@@ -94,8 +94,8 @@ impl Client {
         self.sender.send(message).await
     }
 
-    pub fn get_status(&self) -> lspmux::Client {
-        lspmux::Client { port: self.port }
+    pub fn get_status(&self) -> ext::Client {
+        ext::Client { port: self.port }
     }
 }
 

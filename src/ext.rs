@@ -4,12 +4,12 @@ use tokio::io::BufReader;
 use tokio::net::TcpStream;
 
 use crate::config::Config;
+use crate::lsp::ext::{self, LspMuxOptions, StatusResponse};
 use crate::lsp::jsonrpc::{Message, Request, RequestId, Version};
-use crate::lsp::lspmux::{self, LspMuxOptions, StatusResponse};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{InitializationOptions, InitializeParams};
 
-pub async fn ext_request<T>(method: lspmux::Request) -> Result<T>
+pub async fn ext_request<T>(method: ext::Request) -> Result<T>
 where
     T: DeserializeOwned,
 {
@@ -74,7 +74,7 @@ where
 }
 
 pub async fn status() -> Result<()> {
-    let res = ext_request::<StatusResponse>(lspmux::Request::Status {}).await?;
+    let res = ext_request::<StatusResponse>(ext::Request::Status {}).await?;
     dbg!(res);
     Ok(())
 }

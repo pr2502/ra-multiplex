@@ -8,8 +8,8 @@ use tokio::io::{self, AsyncRead, AsyncWrite, BufStream};
 use tokio::net::TcpStream;
 
 use crate::config::Config;
+use crate::lsp::ext::{LspMuxOptions, Request};
 use crate::lsp::jsonrpc::Message;
-use crate::lsp::lspmux::{LspMuxOptions, Request};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{InitializationOptions, InitializeParams};
 

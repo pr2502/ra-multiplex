@@ -30,8 +30,8 @@
 
 use serde_derive::{Deserialize, Serialize};
 
+pub mod ext;
 pub mod jsonrpc;
-pub mod lspmux;
 pub mod transport;
 
 /// Params for the `initialize` request
@@ -77,7 +77,7 @@ pub struct ClientInfo {
 #[serde(rename_all = "camelCase")]
 pub struct InitializationOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lsp_mux: Option<lspmux::LspMuxOptions>,
+    pub lsp_mux: Option<ext::LspMuxOptions>,
 
     #[serde(flatten)]
     pub other_options: serde_json::Map<String, serde_json::Value>,

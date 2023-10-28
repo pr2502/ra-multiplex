@@ -19,7 +19,7 @@ use crate::client::Client;
 use crate::config::Config;
 use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::{lspmux, InitializeParams, InitializeResult};
+use crate::lsp::{ext, InitializeParams, InitializeResult};
 
 /// Specifies server configuration
 ///
@@ -100,8 +100,8 @@ impl Instance {
         self.server.send(message).await
     }
 
-    pub fn get_status(&self) -> lspmux::Instance {
-        lspmux::Instance {
+    pub fn get_status(&self) -> ext::Instance {
+        ext::Instance {
             pid: self.pid,
             server: self.key.server.clone(),
             args: self.key.args.clone(),
@@ -131,8 +131,8 @@ impl InstanceMap {
         instance_map
     }
 
-    pub fn get_status(&self) -> lspmux::StatusResponse {
-        lspmux::StatusResponse {
+    pub fn get_status(&self) -> ext::StatusResponse {
+        ext::StatusResponse {
             instances: self
                 .0
                 .values()
