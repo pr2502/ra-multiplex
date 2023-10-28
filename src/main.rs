@@ -32,7 +32,11 @@ enum Cmd {
     Server {},
 
     /// Print server status
-    Status {},
+    Status {
+        /// Output data as machine readable JSON
+        #[clap(long, default_value = "false")]
+        json: bool,
+    },
 
     /// Reload workspace
     ///
@@ -51,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
             server_path,
             server_args,
         }) => proxy::run(server_path, server_args).await,
-        Some(Cmd::Status {}) => ext::status().await,
+        Some(Cmd::Status { json }) => ext::status(json).await,
         Some(Cmd::Reload {}) => ext::reload().await,
         None => {
             let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
