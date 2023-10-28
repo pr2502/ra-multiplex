@@ -14,7 +14,9 @@ use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
 use crate::lsp::ext::{self, LspMuxOptions};
-use crate::lsp::jsonrpc::{Message, Request, RequestId, ResponseSuccess, Version};
+use crate::lsp::jsonrpc::{
+    self, Message, Request, RequestId, ResponseError, ResponseSuccess, Version,
+};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::InitializeParams;
 
@@ -71,7 +73,7 @@ pub async fn process(
             .await
         }
         ext::Request::Status {} => status(instance_map, writer).await,
-        ext::Request::Stop { cwd: _, dry_run: _ } => todo!(),
+        ext::Request::Reload { cwd } => reload(port, cwd, instance_map, writer).await,
     }
 }
 
@@ -81,6 +83,11 @@ pub struct Client {
 }
 
 impl Client {
+    fn new(port: u16) -> (Client, mpsc::Receiver<Message>) {
+        let (sender, receiver) = mpsc::channel(16);
+        (Client { port, sender }, receiver)
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -114,6 +121,69 @@ async fn status(
         }))
         .await
         .context("writing response")
+}
+
+async fn reload(
+    port: u16,
+    cwd: String,
+    instance_map: Arc<Mutex<InstanceMap>>,
+    mut writer: LspWriter<OwnedWriteHalf>,
+) -> Result<()> {
+    let mut receiver = if let Some(instance) = instance_map.lock().await.get_by_cwd(&cwd) {
+        let (client, receiver) = Client::new(port);
+        instance.add_client(client).await;
+        instance
+            .send_message(Message::Request(Request {
+                jsonrpc: Version,
+                method: "rust-analyzer/reloadWorkspace".into(),
+                params: Value::Null,
+                id: tag_id(port, &RequestId::Number(0)),
+            }))
+            .await
+            .ok()
+            .context("instance closed")?;
+        receiver
+    } else {
+        writer
+            .write_message(&Message::ResponseError(ResponseError {
+                jsonrpc: Version,
+                error: jsonrpc::Error {
+                    code: 0,
+                    message: "no instance found".into(),
+                    data: None,
+                },
+                id: RequestId::Number(0),
+            }))
+            .await
+            .context("writing response")?;
+        debug!(?cwd, "no instance found for path");
+        return Ok(());
+    };
+
+    if let Some(response) = receiver.recv().await {
+        let message = match response
+            .into_response()
+            .context("received message was not a response")?
+        {
+            Ok(res) => Message::ResponseSuccess(ResponseSuccess {
+                jsonrpc: Version,
+                result: res.result,
+                id: RequestId::Number(0),
+            }),
+            Err(res) => Message::ResponseError(ResponseError {
+                jsonrpc: Version,
+                error: res.error,
+                id: RequestId::Number(0),
+            }),
+        };
+
+        writer
+            .write_message(&message)
+            .await
+            .context("writing response")?;
+    }
+
+    Ok(())
 }
 
 /// Find or spawn a language server instance and connect the client to it
@@ -176,15 +246,10 @@ async fn connect(
     }
     info!("initialized client");
 
-    let (client_tx, client_rx) = mpsc::channel(64);
+    let (client, client_rx) = Client::new(port);
     let (close_tx, close_rx) = mpsc::channel(1);
     task::spawn(input_task(client_rx, close_rx, writer).in_current_span());
-    instance
-        .add_client(Client {
-            port,
-            sender: client_tx,
-        })
-        .await;
+    instance.add_client(client).await;
 
     task::spawn(output_task(reader, port, instance, close_tx).in_current_span());
 

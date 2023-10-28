@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::ops::Deref;
+use std::path::Path;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -131,6 +133,16 @@ impl InstanceMap {
         instance_map
     }
 
+    /// Finds an instance with the longest path such as
+    /// `cwd.starts_with(workspace_root)` is true
+    pub fn get_by_cwd(&self, cwd: &str) -> Option<&Instance> {
+        self.0
+            .iter()
+            .filter(|(key, _)| Path::new(cwd).starts_with(&key.workspace_root))
+            .max_by_key(|(key, _)| key.workspace_root.len())
+            .map(|(_, inst)| inst.deref())
+    }
+
     pub fn get_status(&self) -> ext::StatusResponse {
         ext::StatusResponse {
             instances: self
@@ -242,7 +254,7 @@ async fn spawn(
     let mut reader = LspReader::new(BufReader::new(stdout), "server");
 
     let stdin = child.stdin.take().unwrap();
-    let mut writer = LspWriter::new(stdin, "-> server");
+    let mut writer = LspWriter::new(stdin, "server");
 
     let init_result = initialize_handshake(init_req_params, &mut reader, &mut writer)
         .await

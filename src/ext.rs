@@ -1,3 +1,5 @@
+use std::env;
+
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
 use tokio::io::BufReader;
@@ -14,11 +16,6 @@ where
     T: DeserializeOwned,
 {
     let config = Config::load_or_default().await;
-    // let cwd = env::current_dir()
-    //     .context("unable to get current_dir")?
-    //     .to_str()
-    //     .context("current_dir is not valid utf-8")?
-    //     .to_owned();
 
     let (reader, writer) = TcpStream::connect(config.connect)
         .await
@@ -75,6 +72,18 @@ where
 
 pub async fn status() -> Result<()> {
     let res = ext_request::<StatusResponse>(ext::Request::Status {}).await?;
+    dbg!(res);
+    Ok(())
+}
+
+pub async fn reload() -> Result<()> {
+    let cwd = env::current_dir()
+        .context("unable to get current_dir")?
+        .to_str()
+        .context("current_dir is not valid utf-8")?
+        .to_owned();
+
+    let res = ext_request::<serde_json::Value>(ext::Request::Reload { cwd }).await?;
     dbg!(res);
     Ok(())
 }

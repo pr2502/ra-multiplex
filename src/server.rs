@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::task;
-use tracing::{debug, error, info, info_span, warn, Instrument};
+use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::client;
 use crate::config::Config;
@@ -22,7 +22,7 @@ pub async fn run() -> Result<()> {
                     async move {
                         info!("client connected");
                         match client::process(socket, port, instance_map).await {
-                            Ok(_) => debug!("client initialized"),
+                            Ok(_) => {}
                             Err(err) => error!("client error: {err:?}"),
                         }
                     }
