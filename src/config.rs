@@ -146,7 +146,8 @@ impl Config {
 
         let format = tracing_subscriber::fmt::layer()
             .without_time()
-            .with_target(false);
+            .with_target(false)
+            .with_writer(std::io::stderr);
 
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(&self.log_filters))
