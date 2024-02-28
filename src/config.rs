@@ -79,7 +79,7 @@ mod de {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default::instance_timeout")]

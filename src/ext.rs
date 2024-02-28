@@ -70,6 +70,12 @@ where
     }
 }
 
+pub async fn config() -> Result<()> {
+    let config = Config::load_or_default().await;
+    println!("{:?}", config);
+    Ok(())
+}
+
 pub async fn status(json: bool) -> Result<()> {
     let res = ext_request::<StatusResponse>(ext::Request::Status {}).await?;
 
