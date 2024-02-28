@@ -38,6 +38,9 @@ enum Cmd {
         json: bool,
     },
 
+    /// Print server configuration
+    Config {},
+
     /// Reload workspace
     ///
     /// For rust-analyzer send the `rust-analyzer/reloadWorkspace` extension request.
@@ -56,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
             server_args,
         }) => proxy::run(server_path, server_args).await,
         Some(Cmd::Status { json }) => ext::status(json).await,
+        Some(Cmd::Config {}) => ext::config().await,
         Some(Cmd::Reload {}) => ext::reload().await,
         None => {
             let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
