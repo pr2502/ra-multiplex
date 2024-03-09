@@ -150,11 +150,21 @@ impl From<ResponseError> for Message {
     }
 }
 
-impl fmt::Debug for Message {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let json = serde_json::to_string(self).expect("BUG: invalid message");
-        f.write_str(&json)
-    }
+macro_rules! impl_json_debug {
+    ( $($type:ty),* $(,)? ) => {
+        $(
+            impl fmt::Debug for $type {
+                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    let json = serde_json::to_string(self).expect("BUG: invalid message");
+                    f.write_str(&json)
+                }
+            }
+        )*
+    };
+}
+
+impl_json_debug! {
+    Message, Request, Notification, ResponseSuccess, ResponseError,
 }
 
 #[derive(Debug)]
