@@ -19,7 +19,7 @@ use tracing::{debug, error, field, info, instrument, warn, Instrument};
 
 use crate::client::Client;
 use crate::config::Config;
-use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, Version};
+use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{ext, InitializeParams, InitializeResult};
 
@@ -489,30 +489,29 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 };
             }
 
-            Message::Request(_) => {
-                debug!(?message, "server request");
-                // FIXME uncommenting this crashes rust-analyzer, presumably because the client
-                // then sends a confusing response or something? i'm guessing that the response
-                // id gets tagged with port but rust-analyzer expects to know the id because
-                // it's actually a response and not a request. i'm not sure if we can handle
-                // these at all with multiple clients attached
-                //
-                // ideally we could send these to all clients, but what if there is a matching
-                // response from each client? rust-analyzer only expects one (this might
-                // actually be why it's crashing)
-                //
-                // ignoring these might end up being the safest option, they don't seem to
-                // matter to neovim anyway
-                // ```rust
-                // let message = Message::from_bytes(bytes);
-                // let senders = senders.read().await;
-                // for sender in senders.values() {
-                //     sender
-                //         .send(message.clone())
-                //         .await
-                //         .context("forward server notification")?;
-                // }
-                // ```
+            Message::Request(req) => {
+                match req.method.as_str() {
+                    // Response to `workDoneProgress/create` doesn't contain
+                    // anything important. So we're going to forward the request
+                    // to all clients, send a forged successful response and
+                    // ignore the real client responses.
+                    "window/workDoneProgress/create" => {
+                        for client in message_readers.values() {
+                            let _ignore = client.send_message(req.clone().into()).await;
+                        }
+
+                        let res = ResponseSuccess {
+                            jsonrpc: Version,
+                            result: json!(null),
+                            id: req.id,
+                        };
+                        let _ = instance.send_message(res.into()).await;
+                    }
+
+                    _ => {
+                        debug!(message = ?req, "server request");
+                    }
+                }
             }
 
             Message::Notification(notif) => {
