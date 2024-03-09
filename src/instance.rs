@@ -465,13 +465,13 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
         };
 
         // Lock _after_ we have a message to send, then send and immediately release the lock
-        let message_readers = instance.clients.lock().await;
+        let clients = instance.clients.lock().await;
         match message {
             Message::ResponseSuccess(mut res) => {
                 if let Some((port, id)) = parse_tagged_id(&res.id) {
                     res.id = id;
-                    if let Some(sender) = message_readers.get(&port) {
-                        let _ignore = sender.send_message(res.into()).await;
+                    if let Some(client) = clients.get(&port) {
+                        let _ = client.send_message(res.into()).await;
                     } else {
                         debug!(?port, "no client");
                     }
@@ -481,8 +481,8 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             Message::ResponseError(mut res) => {
                 if let Some((port, id)) = parse_tagged_id(&res.id) {
                     res.id = id;
-                    if let Some(sender) = message_readers.get(&port) {
-                        let _ignore = sender.send_message(res.into()).await;
+                    if let Some(client) = clients.get(&port) {
+                        let _ = client.send_message(res.into()).await;
                     } else {
                         debug!(?port, "no client");
                     }
@@ -496,8 +496,8 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                     // to all clients, send a forged successful response and
                     // ignore the real client responses.
                     "window/workDoneProgress/create" => {
-                        for client in message_readers.values() {
-                            let _ignore = client.send_message(req.clone().into()).await;
+                        for client in clients.values() {
+                            let _ = client.send_message(req.clone().into()).await;
                         }
 
                         let res = ResponseSuccess {
@@ -516,8 +516,8 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
 
             Message::Notification(notif) => {
                 // Send notifications to all clients
-                for sender in message_readers.values() {
-                    let _ignore = sender.send_message(notif.clone().into()).await;
+                for client in clients.values() {
+                    let _ = client.send_message(notif.clone().into()).await;
                 }
             }
         }
