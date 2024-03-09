@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn, Instrument};
 use uriparse::URI;
 
 use crate::instance::{self, Instance, InstanceKey, InstanceMap};
-use crate::lsp::ext::{self, LspMuxOptions};
+use crate::lsp::ext::{self, LspMuxOptions, Tag};
 use crate::lsp::jsonrpc::{
     self, Message, Request, RequestId, ResponseError, ResponseSuccess, Version,
 };
@@ -137,7 +137,7 @@ async fn reload(
                 jsonrpc: Version,
                 method: "rust-analyzer/reloadWorkspace".into(),
                 params: Value::Null,
-                id: tag_id(port, &RequestId::Number(0)),
+                id: RequestId::Number(0).tag(Tag::Port(port)),
             }))
             .await
             .ok()
@@ -361,13 +361,6 @@ async fn input_task(
     info!("client disconnected");
 }
 
-fn tag_id(port: u16, id: &RequestId) -> RequestId {
-    RequestId::String(match id {
-        RequestId::Number(number) => format!("{port}:n:{number}"),
-        RequestId::String(string) => format!("{port}:s:{string}"),
-    })
-}
-
 /// Read messages from client output socket and send them to the server channel
 async fn output_task(
     mut reader: LspReader<BufReader<OwnedReadHalf>>,
@@ -395,26 +388,40 @@ async fn output_task(
                 // see <https://github.com/pr2502/ra-multiplex/issues/5>.
                 info!("client sent shutdown request, sending a response and closing connection");
                 // <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#shutdown>
-                let message = Message::ResponseSuccess(ResponseSuccess {
+                let res = ResponseSuccess {
                     jsonrpc: Version,
                     result: Value::Null,
                     id: req.id,
-                });
+                };
                 // Ignoring error because we would've closed the connection regardless
-                let _ = close_tx.send(message).await;
+                let _ = close_tx.send(res.into()).await;
                 break;
             }
 
             Message::Request(mut req) => {
-                req.id = tag_id(port, &req.id);
+                req.id = req.id.tag(Tag::Port(port));
                 if instance.send_message(req.into()).await.is_err() {
                     break;
                 }
                 instance.keep_alive();
             }
 
-            Message::ResponseSuccess(_) | Message::ResponseError(_) => {
-                debug!(?message, "client response");
+            Message::ResponseSuccess(res) => {
+                match res.id.untag() {
+                    (_, Some(Tag::Drop)) => {
+                        instance.keep_alive();
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                debug!(message = ?res, "unexpected client response");
+                instance.keep_alive();
+            }
+
+            Message::ResponseError(res) => {
+                warn!(message = ?res, "client response error");
+                instance.keep_alive();
             }
 
             Message::Notification(notif) => {

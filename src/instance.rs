@@ -3,7 +3,6 @@ use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::Path;
 use std::process::Stdio;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,10 +14,11 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
-use tracing::{debug, error, field, info, instrument, warn, Instrument};
+use tracing::{debug, error, field, info, instrument, Instrument};
 
 use crate::client::Client;
 use crate::config::Config;
+use crate::lsp::ext::Tag;
 use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{ext, InitializeParams, InitializeResult};
@@ -425,30 +425,6 @@ async fn wait_task(
     }
 }
 
-fn parse_tagged_id(tagged: &RequestId) -> Option<(u16, RequestId)> {
-    match (|| -> Result<_> {
-        let RequestId::String(tagged) = tagged else {
-            bail!("tagged id must be a String found `{tagged:?}`");
-        };
-
-        let (port, rest) = tagged.split_once(':').context("missing first `:`")?;
-        let port = u16::from_str(port)?;
-        let (value_type, old_id) = rest.split_once(':').context("missing second `:`")?;
-        let old_id = match value_type {
-            "n" => RequestId::Number(old_id.parse()?),
-            "s" => RequestId::String(old_id.to_owned()),
-            _ => bail!("invalid tag type `{value_type}`"),
-        };
-        Ok((port, old_id))
-    })() {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            warn!(?err, "invalid tagged id");
-            None
-        }
-    }
-}
-
 /// Read messages from server stdout and send them to corresponding client channels
 async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<ChildStdout>>) {
     loop {
@@ -468,7 +444,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
         let clients = instance.clients.lock().await;
         match message {
             Message::ResponseSuccess(mut res) => {
-                if let Some((port, id)) = parse_tagged_id(&res.id) {
+                if let (id, Some(Tag::Port(port))) = res.id.untag() {
                     res.id = id;
                     if let Some(client) = clients.get(&port) {
                         let _ = client.send_message(res.into()).await;
@@ -479,7 +455,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
 
             Message::ResponseError(mut res) => {
-                if let Some((port, id)) = parse_tagged_id(&res.id) {
+                if let (id, Some(Tag::Port(port))) = res.id.untag() {
                     res.id = id;
                     if let Some(client) = clients.get(&port) {
                         let _ = client.send_message(res.into()).await;
@@ -489,13 +465,16 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 };
             }
 
-            Message::Request(req) => {
+            Message::Request(mut req) => {
                 match req.method.as_str() {
                     // Response to `workDoneProgress/create` doesn't contain
                     // anything important. So we're going to forward the request
                     // to all clients, send a forged successful response and
                     // ignore the real client responses.
                     "window/workDoneProgress/create" => {
+                        let id = req.id;
+                        req.id = id.tag(Tag::Drop);
+
                         for client in clients.values() {
                             let _ = client.send_message(req.clone().into()).await;
                         }
@@ -503,7 +482,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                         let res = ResponseSuccess {
                             jsonrpc: Version,
                             result: json!(null),
-                            id: req.id,
+                            id,
                         };
                         let _ = instance.send_message(res.into()).await;
                     }
