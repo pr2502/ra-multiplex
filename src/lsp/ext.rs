@@ -1,6 +1,80 @@
 //! LSP-mux (ra-multiplex) specific protocol extensions
 
+use std::str::FromStr;
+
+use anyhow::{bail, Context, Result};
 use serde_derive::{Deserialize, Serialize};
+use tracing::warn;
+
+use super::jsonrpc::RequestId;
+
+/// Additional metadata inserted into LSP RequestId
+pub enum Tag {
+    /// Request is coming from a client connected on this port
+    Port(u16),
+    /// Response to this request should be ignored
+    Drop,
+}
+
+impl RequestId {
+    /// Serializes the ID to a string and prepends Tag
+    pub fn tag(&self, tag: Tag) -> RequestId {
+        let tag = match tag {
+            Tag::Port(port) => format!("port:{port}"),
+            Tag::Drop => format!("drop"),
+        };
+        let id = match self {
+            RequestId::Number(number) => format!("n:{number}"),
+            RequestId::String(string) => format!("s:{string}"),
+        };
+        RequestId::String(format!("{tag}:{id}"))
+    }
+
+    // Attempts to parse Tag out of the ID
+    pub fn untag(&self) -> (RequestId, Option<Tag>) {
+        fn parse_inner_id(input: &str) -> Result<RequestId> {
+            let (value_type, serialized_id) = input.split_once(':').context("missing `:`")?;
+            Ok(match value_type {
+                "n" => RequestId::Number(serialized_id.parse().context("invalid numeric ID")?),
+                "s" => RequestId::String(serialized_id.to_owned()),
+                _ => bail!("invalid tag type `{value_type}`"),
+            })
+        }
+
+        fn parse_port(input: &str) -> Result<(u16, &str)> {
+            let (port, rest) = input.split_once(':').context("missing`:`")?;
+            let port = u16::from_str(port).context("invalid port number")?;
+            Ok((port, rest))
+        }
+
+        fn parse_tag(tagged: &RequestId) -> Result<(RequestId, Tag)> {
+            let RequestId::String(tagged) = tagged else {
+                bail!("tagged id must be a String found `{tagged:?}`");
+            };
+
+            if let Some(rest) = tagged.strip_prefix("port:") {
+                let (port, rest) = parse_port(&rest)?;
+                let inner_id = parse_inner_id(&rest).context("failed to parse inner ID")?;
+                return Ok((inner_id, Tag::Port(port)));
+            }
+
+            if let Some(rest) = tagged.strip_prefix("drop:") {
+                let inner_id = parse_inner_id(&rest).context("failed to parse inner ID")?;
+                return Ok((inner_id, Tag::Drop));
+            }
+
+            bail!("unrecognized prefix: {tagged:?}");
+        }
+
+        match parse_tag(&self) {
+            Ok((inner_id, tag)) => (inner_id, Some(tag)),
+            Err(err) => {
+                warn!(?err, "invalid tagged ID");
+                (self.clone(), None)
+            }
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LspMuxOptions {
