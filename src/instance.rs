@@ -14,7 +14,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
-use tracing::{debug, error, field, info, instrument, Instrument};
+use tracing::{debug, error, field, info, instrument, trace, Instrument};
 
 use crate::client::Client;
 use crate::config::Config;
@@ -444,7 +444,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
         let clients = instance.clients.lock().await;
         match message {
             Message::ResponseSuccess(mut res) => {
-                if let (id, Some(Tag::Port(port))) = res.id.untag() {
+                if let (Some(Tag::Port(port)), id) = res.id.untag() {
                     res.id = id;
                     if let Some(client) = clients.get(&port) {
                         let _ = client.send_message(res.into()).await;
@@ -455,7 +455,7 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
 
             Message::ResponseError(mut res) => {
-                if let (id, Some(Tag::Port(port))) = res.id.untag() {
+                if let (Some(Tag::Port(port)), id) = res.id.untag() {
                     res.id = id;
                     if let Some(client) = clients.get(&port) {
                         let _ = client.send_message(res.into()).await;
@@ -470,12 +470,56 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 // important. So we're going to forward the request to all
                 // clients, send a forged successful response and ignore the
                 // real client responses.
+                trace!(?req, "server request window/workDoneProgress/create");
+
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
 
                 for client in clients.values() {
                     let _ = client.send_message(req.clone().into()).await;
                 }
+
+                let res = ResponseSuccess {
+                    jsonrpc: Version,
+                    result: json!(null),
+                    id,
+                };
+                let _ = instance.send_message(res.into()).await;
+            }
+
+            Message::Request(mut req) if req.method == "workspace/configuration" => {
+                // Response to `workspace/configuration` should be the same from
+                // any client. So we'll just pick the first and let it answer.
+                debug!(?req, "server request workspace/configuration");
+
+                req.id = req.id.tag(Tag::Forward);
+
+                if let Some(client) = clients.values().next() {
+                    let _ = client.send_message(req.into()).await;
+                } else {
+                    // If there is no client connected at this moment we'll
+                    // ignore the request.
+                }
+            }
+
+            Message::Request(mut req) if req.method == "client/registerCapability" => {
+                // These need to be forwarded to every client so they're aware
+                // of the capability. The response doesn't contain anything
+                // important so we can safely ignore it.
+                debug!(?req, "server request client/registerCapability");
+
+                let id = req.id;
+                req.id = id.tag(Tag::Drop);
+
+                for client in clients.values() {
+                    let _ = client.send_message(req.clone().into()).await;
+                }
+
+                // TODO We should cache these and replay them to newly connected
+                // clients.
+
+                // TODO The cache also needs to be aware of the registration IDs
+                // to not replay capabilities which were already deregistered.
 
                 let res = ResponseSuccess {
                     jsonrpc: Version,

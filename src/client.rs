@@ -380,6 +380,7 @@ async fn output_task(
                 continue;
             }
         };
+        instance.keep_alive();
 
         match message {
             Message::Request(req) if req.method == "shutdown" => {
@@ -403,32 +404,31 @@ async fn output_task(
                 if instance.send_message(req.into()).await.is_err() {
                     break;
                 }
-                instance.keep_alive();
             }
 
-            Message::ResponseSuccess(res) => {
-                match res.id.untag() {
-                    (_, Some(Tag::Drop)) => {
-                        instance.keep_alive();
-                        continue;
+            Message::ResponseSuccess(mut res) => match res.id.untag() {
+                (Some(Tag::Forward), id) => {
+                    res.id = id;
+                    if instance.send_message(res.into()).await.is_err() {
+                        break;
                     }
-                    _ => {}
                 }
-
-                debug!(message = ?res, "unexpected client response");
-                instance.keep_alive();
-            }
+                (Some(Tag::Drop), _) => {
+                    // Drop the message
+                }
+                _ => {
+                    debug!(message = ?res, "unexpected client response");
+                }
+            },
 
             Message::ResponseError(res) => {
                 warn!(message = ?res, "client response error");
-                instance.keep_alive();
             }
 
             Message::Notification(notif) => {
                 if instance.send_message(notif.into()).await.is_err() {
                     break;
                 }
-                instance.keep_alive();
             }
         }
     }
