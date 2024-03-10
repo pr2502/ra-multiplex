@@ -465,32 +465,28 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 };
             }
 
-            Message::Request(mut req) => {
-                match req.method.as_str() {
-                    // Response to `workDoneProgress/create` doesn't contain
-                    // anything important. So we're going to forward the request
-                    // to all clients, send a forged successful response and
-                    // ignore the real client responses.
-                    "window/workDoneProgress/create" => {
-                        let id = req.id;
-                        req.id = id.tag(Tag::Drop);
+            Message::Request(mut req) if req.method == "window/workDoneProgress/create" => {
+                // Response to `workDoneProgress/create` doesn't contain anything
+                // important. So we're going to forward the request to all
+                // clients, send a forged successful response and ignore the
+                // real client responses.
+                let id = req.id;
+                req.id = id.tag(Tag::Drop);
 
-                        for client in clients.values() {
-                            let _ = client.send_message(req.clone().into()).await;
-                        }
-
-                        let res = ResponseSuccess {
-                            jsonrpc: Version,
-                            result: json!(null),
-                            id,
-                        };
-                        let _ = instance.send_message(res.into()).await;
-                    }
-
-                    _ => {
-                        debug!(message = ?req, "server request");
-                    }
+                for client in clients.values() {
+                    let _ = client.send_message(req.clone().into()).await;
                 }
+
+                let res = ResponseSuccess {
+                    jsonrpc: Version,
+                    result: json!(null),
+                    id,
+                };
+                let _ = instance.send_message(res.into()).await;
+            }
+
+            Message::Request(req) => {
+                debug!(message = ?req, "server request");
             }
 
             Message::Notification(notif) => {
