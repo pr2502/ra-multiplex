@@ -388,12 +388,9 @@ async fn output_task(
                 // Instead we disconnect this client to prevent the editor hanging
                 // see <https://github.com/pr2502/ra-multiplex/issues/5>.
                 info!("client sent shutdown request, sending a response and closing connection");
+
                 // <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#shutdown>
-                let res = ResponseSuccess {
-                    jsonrpc: Version,
-                    result: Value::Null,
-                    id: req.id,
-                };
+                let res = ResponseSuccess::null(req.id);
                 // Ignoring error because we would've closed the connection regardless
                 let _ = close_tx.send(res.into()).await;
                 break;

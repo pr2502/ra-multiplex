@@ -53,6 +53,17 @@ pub struct ResponseSuccess {
     pub id: RequestId,
 }
 
+impl ResponseSuccess {
+    /// Creates a new response with `null` result
+    pub fn null(id: RequestId) -> Self {
+        ResponseSuccess {
+            jsonrpc: Version,
+            result: serde_json::Value::Null,
+            id,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Error {

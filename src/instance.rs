@@ -8,20 +8,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::{select, task};
-use tracing::{debug, error, field, info, instrument, trace, Instrument};
+use tracing::{debug, error, field, info, instrument, trace, warn, Instrument};
 
 use crate::client::Client;
 use crate::config::Config;
 use crate::lsp::ext::Tag;
 use crate::lsp::jsonrpc::{Message, Notification, Request, RequestId, ResponseSuccess, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
-use crate::lsp::{ext, InitializeParams, InitializeResult};
+use crate::lsp::{self, ext};
 
 /// Specifies server configuration
 ///
@@ -41,13 +41,16 @@ pub struct Instance {
     pid: u32,
 
     /// Server's response to `initialize` request
-    init_result: InitializeResult,
+    init_result: lsp::InitializeResult,
 
     /// Sending messages to the language server instance
     server: mpsc::Sender<Message>,
 
     /// Send messages to clients
     clients: Mutex<HashMap<u16, Client>>,
+
+    /// Dynamic capabilities registered by the server
+    dynamic_capabilities: Mutex<HashMap<String, lsp::Registration>>,
 
     /// Wakes up `wait_task` and asks it to send SIGKILL to the instance.
     close: Notify,
@@ -81,18 +84,33 @@ impl Instance {
         i64::max(0, utc_now() - self.last_used.load(Ordering::Relaxed))
     }
 
-    pub fn initialize_result(&self) -> InitializeResult {
+    pub fn initialize_result(&self) -> lsp::InitializeResult {
         self.init_result.clone()
     }
 
+    /// Add client to the instance so it can receive traffic from it
+    ///
+    /// It replays all registered dynamic capabilities to it.
     pub async fn add_client(&self, client: Client) {
-        if self
-            .clients
-            .lock()
-            .await
-            .insert(client.port(), client)
-            .is_some()
-        {
+        let mut clients = self.clients.lock().await;
+        let dyn_capabilities = self.dynamic_capabilities.lock().await;
+
+        // Register all currently cached dynamic capabilities. We will drop the
+        // client response and we need to make sure the request ID is unique.
+        let id = RequestId::String("replay:registerCapabilities".into()).tag(Tag::Drop);
+        let params = lsp::RegistrationParams {
+            registrations: dyn_capabilities.values().cloned().collect(),
+        };
+        let req = Request {
+            id,
+            method: "client/registerCapability".into(),
+            params: serde_json::to_value(params).unwrap(),
+            jsonrpc: Version,
+        };
+        debug!(?req, "replaying server request");
+        let _ = client.send_message(req.into()).await;
+
+        if clients.insert(client.port(), client).is_some() {
             unreachable!("BUG: added two clients with the same port");
         }
     }
@@ -100,6 +118,32 @@ impl Instance {
     /// Send a message to the language server channel
     pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
         self.server.send(message).await
+    }
+
+    /// Save registered capabilities to allow later replaying them to new clients
+    async fn register_capabilities(&self, params: Value) -> Result<()> {
+        let params =
+            serde_json::from_value::<lsp::RegistrationParams>(params).context("parsing params")?;
+
+        let mut dyn_capabilities = self.dynamic_capabilities.lock().await;
+        for reg in params.registrations {
+            dyn_capabilities.insert(reg.id.clone(), reg);
+        }
+
+        Ok(())
+    }
+
+    /// Remove cached capability registration to stop replaying them to new clients
+    async fn unregister_capabilities(&self, params: Value) -> Result<()> {
+        let params = serde_json::from_value::<lsp::UnregistrationParams>(params)
+            .context("parsing params")?;
+
+        let mut dyn_capabilities = self.dynamic_capabilities.lock().await;
+        for unreg in params.unregistrations {
+            dyn_capabilities.remove(&unreg.id);
+        }
+
+        Ok(())
     }
 
     pub fn get_status(&self) -> ext::Instance {
@@ -199,7 +243,7 @@ async fn gc_task(
 pub async fn get_or_spawn(
     map: Arc<Mutex<InstanceMap>>,
     key: InstanceKey,
-    init_req_params: InitializeParams,
+    init_req_params: lsp::InitializeParams,
 ) -> Result<Arc<Instance>> {
     // We have locked the whole map so we can assume noone else tries to spawn
     // the same instance again.
@@ -222,7 +266,7 @@ pub async fn get_or_spawn(
 #[instrument(name = "instance", fields(pid = field::Empty), skip_all, parent = None)]
 async fn spawn(
     key: InstanceKey,
-    init_req_params: InitializeParams,
+    init_req_params: lsp::InitializeParams,
     // Caller `get_or_spawn` is holding a lock to the map, we must not try to
     // lock it within this function to not cause deadlock, only spawned tasks
     // are allowed to lock it again.
@@ -270,6 +314,7 @@ async fn spawn(
         init_result,
         server: message_writer,
         clients: Mutex::default(),
+        dynamic_capabilities: Mutex::default(),
         close: Notify::new(),
         last_used: AtomicI64::new(utc_now()),
     });
@@ -284,10 +329,10 @@ async fn spawn(
 
 #[instrument(skip_all)]
 async fn initialize_handshake(
-    init_req_params: InitializeParams,
+    init_req_params: lsp::InitializeParams,
     reader: &mut LspReader<BufReader<ChildStdout>>,
     writer: &mut LspWriter<ChildStdin>,
-) -> Result<InitializeResult> {
+) -> Result<lsp::InitializeResult> {
     let request_id = "lspmux:initialize_request";
 
     // Use the first client's `InitializeParams` to initialize server. We assume
@@ -479,12 +524,9 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                     let _ = client.send_message(req.clone().into()).await;
                 }
 
-                let res = ResponseSuccess {
-                    jsonrpc: Version,
-                    result: json!(null),
-                    id,
-                };
-                let _ = instance.send_message(res.into()).await;
+                let _ = instance
+                    .send_message(ResponseSuccess::null(id).into())
+                    .await;
             }
 
             Message::Request(mut req) if req.method == "workspace/configuration" => {
@@ -505,7 +547,8 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             Message::Request(mut req) if req.method == "client/registerCapability" => {
                 // These need to be forwarded to every client so they're aware
                 // of the capability. The response doesn't contain anything
-                // important so we can safely ignore it.
+                // important so we can safely ignore the real answers and send a
+                // fake one to the server.
                 debug!(?req, "server request client/registerCapability");
 
                 let id = req.id;
@@ -515,18 +558,40 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                     let _ = client.send_message(req.clone().into()).await;
                 }
 
-                // TODO We should cache these and replay them to newly connected
-                // clients.
+                // We need to cache the dynamic capabilities registrations for
+                // any client that might come later.
+                if let Err(err) = instance.register_capabilities(req.params).await {
+                    warn!(?err, "error registering capabilities");
+                }
 
-                // TODO The cache also needs to be aware of the registration IDs
-                // to not replay capabilities which were already deregistered.
+                let _ = instance
+                    .send_message(ResponseSuccess::null(id).into())
+                    .await;
+            }
 
-                let res = ResponseSuccess {
-                    jsonrpc: Version,
-                    result: json!(null),
-                    id,
-                };
-                let _ = instance.send_message(res.into()).await;
+            Message::Request(mut req) if req.method == "client/unregisterCapability" => {
+                // These need to be forwarded to every client so they're aware
+                // of the capability not being available anymore. The response
+                // doesn't contain anything important so we can safely ignore
+                // the real answers and send a fake one to the server.
+                debug!(?req, "server request client/unregisterCapability");
+
+                let id = req.id;
+                req.id = id.tag(Tag::Drop);
+
+                for client in clients.values() {
+                    let _ = client.send_message(req.clone().into()).await;
+                }
+
+                // We need to remove this registration from the cache so we
+                // don't announce it to new clients anymore.
+                if let Err(err) = instance.unregister_capabilities(req.params).await {
+                    warn!(?err, "error unregistering capabilities");
+                }
+
+                let _ = instance
+                    .send_message(ResponseSuccess::null(id).into())
+                    .await;
             }
 
             Message::Request(req) => {
