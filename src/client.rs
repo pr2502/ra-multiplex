@@ -414,12 +414,12 @@ async fn output_task(
                     // Drop the message
                 }
                 _ => {
-                    debug!(message = ?res, "unexpected client response");
+                    debug!(?res, "unexpected client response");
                 }
             },
 
             Message::ResponseError(res) => {
-                warn!(message = ?res, "client response error");
+                warn!(?res, "client responded with error");
             }
 
             Message::Notification(notif) => {

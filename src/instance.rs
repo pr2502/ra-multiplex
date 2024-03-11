@@ -499,25 +499,34 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
         let clients = instance.clients.lock().await;
         match message {
             Message::ResponseSuccess(mut res) => {
+                // Forward successful response to the right client based on the
+                // Request ID tag.
                 if let (Some(Tag::Port(port)), id) = res.id.untag() {
                     res.id = id;
                     if let Some(client) = clients.get(&port) {
                         let _ = client.send_message(res.into()).await;
                     } else {
-                        debug!(?port, "no client");
+                        debug!(?port, "no matching client");
                     }
-                };
+                } else {
+                    warn!(?res, "ignoring improperly tagged server response")
+                }
             }
 
             Message::ResponseError(mut res) => {
+                // Forward the error response to the right client based on the
+                // Request ID tag.
                 if let (Some(Tag::Port(port)), id) = res.id.untag() {
+                    warn!(?res, "server responded with error");
                     res.id = id;
                     if let Some(client) = clients.get(&port) {
                         let _ = client.send_message(res.into()).await;
                     } else {
-                        debug!(?port, "no client");
+                        debug!(?port, "no matching client");
                     }
-                };
+                } else {
+                    warn!(?res, "ignoring improperly tagged server response")
+                }
             }
 
             Message::Request(mut req) if req.method == "window/workDoneProgress/create" => {
@@ -605,11 +614,12 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
 
             Message::Request(req) => {
-                debug!(message = ?req, "server request");
+                debug!(message = ?req, "ignoring unknown server request");
             }
 
             Message::Notification(notif) => {
-                // Send notifications to all clients
+                // Server notifications don't expect a response. We can forward
+                // them to all clients.
                 for client in clients.values() {
                     let _ = client.send_message(notif.clone().into()).await;
                 }
