@@ -86,14 +86,20 @@ pub async fn status(json: bool) -> Result<()> {
     }
 
     for instance in res.instances {
-        println!("- Instance pid {}", instance.pid);
+        println!("- Instance");
+        println!("  pid: {}", instance.pid);
         println!("  server: {:?} {:?}", instance.server, instance.args);
         println!("  path: {:?}", instance.workspace_root);
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         println!("  last used: {}s ago", now - instance.last_used);
+        println!("  registered dynamic capabilities:");
+        for cap in instance.registered_dyn_capabilities {
+            println!("    - {}", cap);
+        }
         println!("  clients:");
         for client in instance.clients {
-            println!("  - Client port {}", client.port);
+            println!("    - Client");
+            println!("      port: {}", client.port);
         }
     }
     Ok(())
