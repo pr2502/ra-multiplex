@@ -111,3 +111,37 @@ pub struct ServerInfo {
     name: String,
     version: Option<String>,
 }
+
+/// Params for `client/registerCapability` request
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistrationParams {
+    pub registrations: Vec<Registration>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Registration {
+    pub id: String,
+    pub method: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub register_options: Option<serde_json::Value>,
+}
+
+/// Params for `client/unregisterCapability` request
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UnregistrationParams {
+    /// This is a typo in the LSP 3.xx spec, we need to replicate it until they
+    /// upgrade the protocol version.
+    #[serde(rename = "unregisterations")]
+    pub unregistrations: Vec<Unregistration>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Unregistration {
+    pub id: String,
+    pub method: String,
+}
