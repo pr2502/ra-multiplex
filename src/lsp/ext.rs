@@ -23,8 +23,8 @@ impl RequestId {
     pub fn tag(&self, tag: Tag) -> RequestId {
         let tag = match tag {
             Tag::Port(port) => format!("port:{port}"),
-            Tag::Drop => format!("drop"),
-            Tag::Forward => format!("forward"),
+            Tag::Drop => "drop".into(),
+            Tag::Forward => "forward".into(),
         };
         let id = match self {
             RequestId::Number(number) => format!("n:{number}"),
@@ -56,25 +56,25 @@ impl RequestId {
             };
 
             if let Some(rest) = input.strip_prefix("port:") {
-                let (port, rest) = parse_port(&rest)?;
-                let inner_id = parse_inner_id(&rest).context("failed to parse inner ID")?;
+                let (port, rest) = parse_port(rest)?;
+                let inner_id = parse_inner_id(rest).context("failed to parse inner ID")?;
                 return Ok((Tag::Port(port), inner_id));
             }
 
             if let Some(rest) = input.strip_prefix("drop:") {
-                let inner_id = parse_inner_id(&rest).context("failed to parse inner ID")?;
+                let inner_id = parse_inner_id(rest).context("failed to parse inner ID")?;
                 return Ok((Tag::Drop, inner_id));
             }
 
             if let Some(rest) = input.strip_prefix("forward:") {
-                let inner_id = parse_inner_id(&rest).context("failed to parse inner ID")?;
+                let inner_id = parse_inner_id(rest).context("failed to parse inner ID")?;
                 return Ok((Tag::Forward, inner_id));
             }
 
             bail!("unrecognized prefix: {input:?}");
         }
 
-        match parse_tag(&self) {
+        match parse_tag(self) {
             Ok((tag, inner_id)) => (Some(tag), inner_id),
             Err(err) => {
                 warn!(?err, "invalid tagged ID");
