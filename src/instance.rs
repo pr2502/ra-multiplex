@@ -614,6 +614,14 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             }
 
             Message::Request(req) => {
+                // Unimplemented server -> client requests I've found in the LSP Spec.
+                // TODO workspace/workspaceFolders request
+                // TODO workspace/applyEdit request
+                // TODO workspace/codeLens/refresh request
+                // TODO workspace/semanticTokens/refresh request
+                // TODO workspace/inlayHint/refresh request
+                // TODO workspace/inlineValue/refresh request
+                // TODO workspace/diagnostic/refresh request
                 debug!(message = ?req, "ignoring unknown server request");
             }
 
