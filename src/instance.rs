@@ -147,18 +147,28 @@ impl Instance {
     }
 
     pub fn get_status(&self) -> ext::Instance {
+        let clients = self
+            .clients
+            .blocking_lock()
+            .values()
+            .map(|client| client.get_status())
+            .collect();
+
+        let registered_dyn_capabilities = self
+            .dynamic_capabilities
+            .blocking_lock()
+            .values()
+            .map(|reg| reg.method.clone())
+            .collect();
+
         ext::Instance {
             pid: self.pid,
             server: self.key.server.clone(),
             args: self.key.args.clone(),
             workspace_root: self.key.workspace_root.clone(),
             last_used: self.last_used.load(Ordering::Relaxed),
-            clients: self
-                .clients
-                .blocking_lock()
-                .values()
-                .map(|client| client.get_status())
-                .collect(),
+            clients,
+            registered_dyn_capabilities,
         }
     }
 }

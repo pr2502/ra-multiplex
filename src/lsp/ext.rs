@@ -156,6 +156,7 @@ pub struct Instance {
     pub server: String,
     pub args: Vec<String>,
     pub workspace_root: String,
+    pub registered_dyn_capabilities: Vec<String>,
     pub last_used: i64,
     pub clients: Vec<Client>,
 }
