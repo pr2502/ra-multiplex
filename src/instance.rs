@@ -529,12 +529,22 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 }
             }
 
-            Message::Request(mut req) if req.method == "window/workDoneProgress/create" => {
-                // Response to `workDoneProgress/create` doesn't contain anything
-                // important. So we're going to forward the request to all
-                // clients, send a forged successful response and ignore the
-                // real client responses.
-                trace!(?req, "server request window/workDoneProgress/create");
+            Message::Request(mut req)
+                if [
+                    "window/workDoneProgress/create",
+                    "workspace/codeLens/refresh",
+                    "workspace/semanticTokens/refresh",
+                    "workspace/inlayHint/refresh",
+                    "workspace/inlineValue/refresh",
+                    "workspace/diagnostic/refresh",
+                ]
+                .contains(&req.method.as_str()) =>
+            {
+                // All these server requests have null responses and we need
+                // to inform all clients. We can forward the request to all
+                // clients, send a fake successful response and ignore the real
+                // client responses.
+                trace!(?req, "server request {}", req.method.as_str());
 
                 let id = req.id;
                 req.id = id.tag(Tag::Drop);
@@ -617,11 +627,6 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 // Unimplemented server -> client requests I've found in the LSP Spec.
                 // TODO workspace/workspaceFolders request
                 // TODO workspace/applyEdit request
-                // TODO workspace/codeLens/refresh request
-                // TODO workspace/semanticTokens/refresh request
-                // TODO workspace/inlayHint/refresh request
-                // TODO workspace/inlineValue/refresh request
-                // TODO workspace/diagnostic/refresh request
                 debug!(message = ?req, "ignoring unknown server request");
             }
 
