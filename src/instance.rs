@@ -122,12 +122,18 @@ impl Instance {
     pub async fn cleanup_client(&self, client: Client) -> Result<()> {
         debug!("cleaning up client");
 
-        if self.clients.lock().await.remove(&client.port()).is_none() {
+        let Some(client) = self.clients.lock().await.remove(&client.port()) else {
             // TODO This happens for example when the language server died while
             // client was still connected, and the client cleanup is attempted
             // with the instance being gone already. We should try notifying
             // these clients immediately and handling the cleanup separately.
             bail!("client was not connected");
+        };
+
+        for uri in client.files {
+            if let Err(err) = self.close_file(None, uri).await {
+                warn!(?err, "error closing file");
+            }
         }
 
         Ok(())
@@ -175,7 +181,7 @@ impl Instance {
         let mut clients = self.clients.lock().await;
         for client in clients.values() {
             if client.files.contains(uri) {
-                debug!(?uri, "file already open by another client");
+                debug!(?uri, "file is already opened by another client");
                 send_notification = false;
                 break;
             }
@@ -193,6 +199,46 @@ impl Instance {
                 method: "textDocument/didOpen".into(),
                 params: serde_json::to_value(params).unwrap(),
             };
+            debug!(?notif, "first client opened file");
+            let _ = self.send_message(notif.into()).await;
+        }
+
+        Ok(())
+    }
+
+    /// Handle client closing a file with `textDocument/didOpen` or
+    /// disconnecting with file still opened
+    pub async fn close_file(&self, port: Option<u16>, uri: String) -> Result<()> {
+        let mut send_notification = true;
+
+        let mut clients = self.clients.lock().await;
+
+        if let Some(port) = port {
+            clients
+                .get_mut(&port)
+                .context("no matching client")?
+                .files
+                .remove(&uri);
+        }
+
+        for client in clients.values() {
+            if client.files.contains(&uri) {
+                debug!(?uri, "file still opened by another client");
+                send_notification = false;
+                break;
+            }
+        }
+
+        if send_notification {
+            let params = lsp::DidCloseTextDocumentParams {
+                text_document: lsp::TextDocumentIdentifier { uri },
+            };
+            let notif = Notification {
+                jsonrpc: Version,
+                method: "textDocument/didClose".into(),
+                params: serde_json::to_value(params).unwrap(),
+            };
+            debug!(?notif, "last client closed file");
             let _ = self.send_message(notif.into()).await;
         }
 
