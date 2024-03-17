@@ -9,7 +9,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex};
-use tokio::{select, task};
+use tokio::task;
 use tracing::{debug, error, info, warn, Instrument};
 use uriparse::URI;
 
@@ -78,6 +78,7 @@ pub async fn process(
     }
 }
 
+#[derive(Clone)]
 pub struct Client {
     port: u16,
     sender: mpsc::Sender<Message>,
@@ -99,10 +100,6 @@ impl Client {
 
     pub fn port(&self) -> u16 {
         self.port
-    }
-
-    pub fn is_connected(&self) -> bool {
-        !self.sender.is_closed()
     }
 
     /// Send a message to the client channel
@@ -259,11 +256,10 @@ async fn connect(
     info!("initialized client");
 
     let (client, client_rx) = Client::new(port);
-    let (close_tx, close_rx) = mpsc::channel(1);
-    task::spawn(input_task(client_rx, close_rx, writer).in_current_span());
-    instance.add_client(client).await;
+    task::spawn(input_task(client_rx, writer).in_current_span());
+    instance.add_client(client.clone()).await;
 
-    task::spawn(output_task(reader, port, instance, close_tx).in_current_span());
+    task::spawn(output_task(reader, client, instance).in_current_span());
 
     Ok(())
 }
@@ -338,11 +334,7 @@ fn select_workspace_root<'a>(
 }
 
 /// Receive messages from channel and write them to the client input socket
-async fn input_task(
-    mut rx: mpsc::Receiver<Message>,
-    mut close_rx: mpsc::Receiver<Message>,
-    mut writer: LspWriter<OwnedWriteHalf>,
-) {
+async fn input_task(mut rx: mpsc::Receiver<Message>, mut writer: LspWriter<OwnedWriteHalf>) {
     // Unlike the output task, here we first wait on the channel which is going
     // to block until the language server sends a notification, however if
     // we're the last client and have just closed the server is unlikely to send
@@ -355,10 +347,7 @@ async fn input_task(
     // request was received but the client closed `close_rx` channel will be
     // dropped (unlike the normal rx channel which is shared) and the connection
     // will close without sending any response.
-    while let Some(message) = select! {
-        message = close_rx.recv() => message,
-        message = rx.recv() => message,
-    } {
+    while let Some(message) = rx.recv().await {
         if let Err(err) = writer.write_message(&message).await {
             match err.kind() {
                 // ignore benign errors, treat as socket close
@@ -376,9 +365,8 @@ async fn input_task(
 /// Read messages from client output socket and send them to the server channel
 async fn output_task(
     mut reader: LspReader<BufReader<OwnedReadHalf>>,
-    port: u16,
+    client: Client,
     instance: Arc<Instance>,
-    close_tx: mpsc::Sender<Message>,
 ) {
     loop {
         let message = match reader.read_message().await {
@@ -404,12 +392,12 @@ async fn output_task(
                 // <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#shutdown>
                 let res = ResponseSuccess::null(req.id);
                 // Ignoring error because we would've closed the connection regardless
-                let _ = close_tx.send(res.into()).await;
+                let _ = client.send_message(res.into()).await;
                 break;
             }
 
             Message::Request(mut req) => {
-                req.id = req.id.tag(Tag::Port(port));
+                req.id = req.id.tag(Tag::Port(client.port));
                 if instance.send_message(req.into()).await.is_err() {
                     break;
                 }
@@ -435,7 +423,7 @@ async fn output_task(
             }
 
             Message::Notification(notif) if notif.method == "textDocument/didOpen" => {
-                if let Err(err) = instance.open_file(port, notif.params).await {
+                if let Err(err) = instance.open_file(client.port, notif.params).await {
                     warn!(?err, "error opening file");
                 }
             }
@@ -446,5 +434,9 @@ async fn output_task(
                 }
             }
         }
+    }
+
+    if let Err(err) = instance.cleanup_client(client).await {
+        warn!(?err, "error cleaning up after a client");
     }
 }

@@ -95,24 +95,42 @@ impl Instance {
         let mut clients = self.clients.lock().await;
         let dyn_capabilities = self.dynamic_capabilities.lock().await;
 
-        // Register all currently cached dynamic capabilities. We will drop the
-        // client response and we need to make sure the request ID is unique.
-        let id = RequestId::String("replay:registerCapabilities".into()).tag(Tag::Drop);
-        let params = lsp::RegistrationParams {
-            registrations: dyn_capabilities.values().cloned().collect(),
-        };
-        let req = Request {
-            id,
-            method: "client/registerCapability".into(),
-            params: serde_json::to_value(params).unwrap(),
-            jsonrpc: Version,
-        };
-        debug!(?req, "replaying server request");
-        let _ = client.send_message(req.into()).await;
+        if !dyn_capabilities.is_empty() {
+            // Register all currently cached dynamic capabilities if there are
+            // any. We will drop the client response and we need to make sure
+            // the request ID is unique.
+            let id = RequestId::String("replay:registerCapabilities".into()).tag(Tag::Drop);
+            let params = lsp::RegistrationParams {
+                registrations: dyn_capabilities.values().cloned().collect(),
+            };
+            let req = Request {
+                id,
+                method: "client/registerCapability".into(),
+                params: serde_json::to_value(params).unwrap(),
+                jsonrpc: Version,
+            };
+            debug!(?req, "replaying server request");
+            let _ = client.send_message(req.into()).await;
+        }
 
         if clients.insert(client.port(), client).is_some() {
             unreachable!("BUG: added two clients with the same port");
         }
+    }
+
+    /// Send cleanup messages and remove remove client for client map
+    pub async fn cleanup_client(&self, client: Client) -> Result<()> {
+        debug!("cleaning up client");
+
+        if self.clients.lock().await.remove(&client.port()).is_none() {
+            // TODO This happens for example when the language server died while
+            // client was still connected, and the client cleanup is attempted
+            // with the instance being gone already. We should try notifying
+            // these clients immediately and handling the cleanup separately.
+            bail!("client was not connected");
+        }
+
+        Ok(())
     }
 
     /// Send a message to the language server channel
@@ -255,22 +273,14 @@ async fn gc_task(
         interval.tick().await;
 
         for (key, instance) in &instance_map.lock().await.0 {
-            let mut message_readers = instance.clients.lock().await;
-
-            // Remove closed senders
-            //
-            // We have to check here because otherwise the senders only get
-            // removed when a message is sent to them which might leave them
-            // hanging forever if the language server is quiet and cause the
-            // GC to never trigger.
-            message_readers.retain(|_port, client| client.is_connected());
+            let clients = instance.clients.lock().await;
 
             let idle = instance.idle();
-            debug!(path = ?key.workspace_root, idle, readers = message_readers.len(), "check instance");
+            debug!(path = ?key.workspace_root, idle, clients = clients.len(), "check instance");
 
             if let Some(instance_timeout) = instance_timeout {
                 // Close timed out instance
-                if idle > i64::from(instance_timeout) && message_readers.is_empty() {
+                if idle > i64::from(instance_timeout) && clients.is_empty() {
                     info!(pid = instance.pid, path = ?key.workspace_root, idle, "instance timed out");
                     instance.close.notify_one();
                 }
