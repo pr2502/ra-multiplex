@@ -97,6 +97,10 @@ pub struct LspMuxOptions {
     pub method: Request,
 }
 
+impl_json_debug! {
+    LspMuxOptions,
+}
+
 impl LspMuxOptions {
     /// Protocol version
     ///

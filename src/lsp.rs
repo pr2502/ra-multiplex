@@ -30,6 +30,19 @@
 
 use serde_derive::{Deserialize, Serialize};
 
+macro_rules! impl_json_debug {
+    ( $($type:ty),* $(,)? ) => {
+        $(
+            impl ::std::fmt::Debug for $type {
+                fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+                    let json = ::serde_json::to_string(self).expect("BUG: invalid message");
+                    f.write_str(&json)
+                }
+            }
+        )*
+    };
+}
+
 pub mod ext;
 pub mod jsonrpc;
 pub mod transport;

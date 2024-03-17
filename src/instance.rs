@@ -636,31 +636,43 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
             Message::ResponseSuccess(mut res) => {
                 // Forward successful response to the right client based on the
                 // Request ID tag.
-                if let (Some(Tag::Port(port)), id) = res.id.untag() {
-                    res.id = id;
-                    if let Some(client) = clients.get(&port) {
-                        let _ = client.send_message(res.into()).await;
-                    } else {
-                        debug!(?port, "no matching client");
+                match res.id.untag() {
+                    (Some(Tag::Port(port)), id) => {
+                        res.id = id;
+                        if let Some(client) = clients.get(&port) {
+                            let _ = client.send_message(res.into()).await;
+                        } else {
+                            debug!(?port, "no matching client");
+                        }
                     }
-                } else {
-                    warn!(?res, "ignoring improperly tagged server response")
+                    (Some(Tag::Drop), _) => {
+                        // Drop the message
+                    }
+                    _ => {
+                        warn!(?res, "ignoring improperly tagged server response")
+                    }
                 }
             }
 
             Message::ResponseError(mut res) => {
                 // Forward the error response to the right client based on the
                 // Request ID tag.
-                if let (Some(Tag::Port(port)), id) = res.id.untag() {
-                    warn!(?res, "server responded with error");
-                    res.id = id;
-                    if let Some(client) = clients.get(&port) {
-                        let _ = client.send_message(res.into()).await;
-                    } else {
-                        debug!(?port, "no matching client");
+                match res.id.untag() {
+                    (Some(Tag::Port(port)), id) => {
+                        warn!(?res, "server responded with error");
+                        res.id = id;
+                        if let Some(client) = clients.get(&port) {
+                            let _ = client.send_message(res.into()).await;
+                        } else {
+                            debug!(?port, "no matching client");
+                        }
                     }
-                } else {
-                    warn!(?res, "ignoring improperly tagged server response")
+                    (Some(Tag::Drop), _) => {
+                        // Drop the message
+                    }
+                    _ => {
+                        warn!(?res, "ignoring improperly tagged server response")
+                    }
                 }
             }
 

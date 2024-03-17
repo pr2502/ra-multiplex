@@ -59,6 +59,7 @@ pub async fn process(
         LspMuxOptions::PROTOCOL_VERSION,
     );
 
+    debug!(?options, "lspmux initialization");
     match options.method {
         ext::Request::Connect { server, args, cwd } => {
             connect(
@@ -73,7 +74,7 @@ pub async fn process(
             .await
         }
         ext::Request::Status {} => status(instance_map, writer).await,
-        ext::Request::Reload { cwd } => reload(port, cwd, instance_map, writer).await,
+        ext::Request::Reload { cwd } => reload(cwd, instance_map, writer).await,
     }
 }
 
@@ -117,25 +118,28 @@ async fn status(
 }
 
 async fn reload(
-    port: u16,
     cwd: String,
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    let mut receiver = if let Some(instance) = instance_map.lock().await.get_by_cwd(&cwd) {
-        let (client, receiver) = Client::new(port);
-        instance.add_client(client).await;
+    if let Some(instance) = instance_map.lock().await.get_by_cwd(&cwd) {
         instance
             .send_message(Message::Request(Request {
                 jsonrpc: Version,
                 method: "rust-analyzer/reloadWorkspace".into(),
                 params: Value::Null,
-                id: RequestId::Number(0).tag(Tag::Port(port)),
+                id: RequestId::Number(0).tag(Tag::Drop),
             }))
             .await
             .ok()
             .context("instance closed")?;
-        receiver
+
+        writer
+            .write_message(&Message::ResponseSuccess(ResponseSuccess::null(
+                RequestId::Number(0),
+            )))
+            .await
+            .context("writing response")?;
     } else {
         writer
             .write_message(&Message::ResponseError(ResponseError {
@@ -150,30 +154,6 @@ async fn reload(
             .await
             .context("writing response")?;
         debug!(?cwd, "no instance found for path");
-        return Ok(());
-    };
-
-    if let Some(response) = receiver.recv().await {
-        let message = match response
-            .into_response()
-            .context("received message was not a response")?
-        {
-            Ok(res) => Message::ResponseSuccess(ResponseSuccess {
-                jsonrpc: Version,
-                result: res.result,
-                id: RequestId::Number(0),
-            }),
-            Err(res) => Message::ResponseError(ResponseError {
-                jsonrpc: Version,
-                error: res.error,
-                id: RequestId::Number(0),
-            }),
-        };
-
-        writer
-            .write_message(&message)
-            .await
-            .context("writing response")?;
     }
 
     Ok(())
