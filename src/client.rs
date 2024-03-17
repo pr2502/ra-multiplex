@@ -412,6 +412,12 @@ async fn output_task(
                 }
             }
 
+            Message::Notification(notif) if notif.method == "textDocument/didClose" => {
+                if let Err(err) = instance.close_file(client.port, notif.params).await {
+                    warn!(?err, "error closing file");
+                }
+            }
+
             Message::Notification(notif) => {
                 if instance.send_message(notif.into()).await.is_err() {
                     break;
