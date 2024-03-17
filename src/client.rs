@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -80,12 +81,20 @@ pub async fn process(
 pub struct Client {
     port: u16,
     sender: mpsc::Sender<Message>,
+    pub files: HashSet<String>,
 }
 
 impl Client {
     fn new(port: u16) -> (Client, mpsc::Receiver<Message>) {
         let (sender, receiver) = mpsc::channel(16);
-        (Client { port, sender }, receiver)
+        (
+            Client {
+                port,
+                sender,
+                files: HashSet::default(),
+            },
+            receiver,
+        )
     }
 
     pub fn port(&self) -> u16 {
@@ -102,7 +111,10 @@ impl Client {
     }
 
     pub fn get_status(&self) -> ext::Client {
-        ext::Client { port: self.port }
+        ext::Client {
+            port: self.port,
+            files: self.files.iter().cloned().collect(),
+        }
     }
 }
 
@@ -420,6 +432,12 @@ async fn output_task(
 
             Message::ResponseError(res) => {
                 warn!(?res, "client responded with error");
+            }
+
+            Message::Notification(notif) if notif.method == "textDocument/didOpen" => {
+                if let Err(err) = instance.open_file(port, notif.params).await {
+                    warn!(?err, "error opening file");
+                }
             }
 
             Message::Notification(notif) => {

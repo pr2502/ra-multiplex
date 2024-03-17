@@ -146,6 +146,41 @@ impl Instance {
         Ok(())
     }
 
+    /// Handle `textDocument/didOpen` client notification
+    pub async fn open_file(&self, port: u16, params: Value) -> Result<()> {
+        let params = serde_json::from_value::<lsp::DidOpenTextDocumentParams>(params)
+            .context("parsing params")?;
+        let uri = &params.text_document.uri;
+
+        let mut send_notification = true;
+
+        let mut clients = self.clients.lock().await;
+        for client in clients.values() {
+            if client.files.contains(uri) {
+                debug!(?uri, "file already open by another client");
+                send_notification = false;
+                break;
+            }
+        }
+
+        clients
+            .get_mut(&port)
+            .expect("no matching client")
+            .files
+            .insert(uri.clone());
+
+        if send_notification {
+            let notif = Notification {
+                jsonrpc: Version,
+                method: "textDocument/didOpen".into(),
+                params: serde_json::to_value(params).unwrap(),
+            };
+            let _ = self.send_message(notif.into()).await;
+        }
+
+        Ok(())
+    }
+
     pub fn get_status(&self) -> ext::Instance {
         let clients = self
             .clients

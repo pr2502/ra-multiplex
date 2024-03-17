@@ -100,6 +100,10 @@ pub async fn status(json: bool) -> Result<()> {
         for client in instance.clients {
             println!("    - Client");
             println!("      port: {}", client.port);
+            println!("      files:");
+            for file in client.files {
+                println!("        - {}", file);
+            }
         }
     }
     Ok(())

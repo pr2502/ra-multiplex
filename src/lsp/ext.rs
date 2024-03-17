@@ -165,6 +165,7 @@ pub struct Instance {
 #[serde(rename_all = "camelCase")]
 pub struct Client {
     pub port: u16,
+    pub files: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
