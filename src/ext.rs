@@ -11,12 +11,10 @@ use crate::lsp::jsonrpc::{Message, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{InitializationOptions, InitializeParams};
 
-pub async fn ext_request<T>(method: ext::Request) -> Result<T>
+pub async fn ext_request<T>(config: &Config, method: ext::Request) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let config = Config::load_or_default().await;
-
     let (reader, writer) = TcpStream::connect(config.connect)
         .await
         .context("connect")?
@@ -70,14 +68,13 @@ where
     }
 }
 
-pub async fn config() -> Result<()> {
-    let config = Config::load_or_default().await;
-    println!("{:?}", config);
+pub async fn config(config: &Config) -> Result<()> {
+    println!("{:#?}", config);
     Ok(())
 }
 
-pub async fn status(json: bool) -> Result<()> {
-    let res = ext_request::<StatusResponse>(ext::Request::Status {}).await?;
+pub async fn status(config: &Config, json: bool) -> Result<()> {
+    let res = ext_request::<StatusResponse>(config, ext::Request::Status {}).await?;
 
     if json {
         let json = serde_json::to_string(&res).unwrap();
@@ -109,12 +106,12 @@ pub async fn status(json: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn reload() -> Result<()> {
+pub async fn reload(config: &Config) -> Result<()> {
     let cwd = env::current_dir()
         .context("unable to get current_dir")?
         .to_str()
         .context("current_dir is not valid utf-8")?
         .to_owned();
-    ext_request::<IgnoredAny>(ext::Request::Reload { cwd }).await?;
+    ext_request::<IgnoredAny>(config, ext::Request::Reload { cwd }).await?;
     Ok(())
 }

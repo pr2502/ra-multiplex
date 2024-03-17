@@ -1,13 +1,11 @@
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::de::{Error, Unexpected};
 use serde::{Deserialize, Deserializer};
 use serde_derive::{Deserialize, Serialize};
-use tokio::fs;
-use tokio::sync::OnceCell;
-use tracing::info;
 
 mod default {
     use super::*;
@@ -106,7 +104,7 @@ fn generate_default_and_check_it_matches_commited_defaults() {
     use std::fs;
     use std::path::Path;
 
-    let generated_defaults = Config::default_values();
+    let generated_defaults = Config::default();
     let generated_defaults = toml::to_string(&generated_defaults).expect("failed serialize");
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults.toml");
@@ -115,8 +113,8 @@ fn generate_default_and_check_it_matches_commited_defaults() {
     assert_eq!(generated_defaults, saved_defaults);
 }
 
-impl Config {
-    fn default_values() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         Config {
             instance_timeout: default::instance_timeout(),
             gc_interval: default::gc_interval(),
@@ -125,22 +123,27 @@ impl Config {
             log_filters: default::log_filters(),
         }
     }
+}
 
-    async fn try_load() -> anyhow::Result<Self> {
+impl Config {
+    /// Try loading config file from the system default location
+    pub fn try_load() -> Result<Self> {
         let pkg_name = env!("CARGO_PKG_NAME");
         let config_path = ProjectDirs::from("", "", pkg_name)
             .context("project config directory not found")?
             .config_dir()
             .join("config.toml");
         let path = config_path.display();
-        let config_data = fs::read(&config_path)
-            .await
-            .with_context(|| format!("cannot read config file `{path}`"))?;
+        let config_data =
+            fs::read(&config_path).with_context(|| format!("cannot read config file `{path}`"))?;
         toml::from_slice(&config_data).with_context(|| format!("cannot parse config file `{path}`"))
     }
 
-    /// panics if called multiple times
-    fn init_logger(&self) {
+    /// Configure tracing-subscriber with env filter set to `log_filters` (if
+    /// not overriden by RUST_LOG env var)
+    ///
+    /// Panics if called multiple times.
+    pub fn init_logger(&self) {
         use tracing_subscriber::prelude::*;
         use tracing_subscriber::EnvFilter;
 
@@ -157,28 +160,5 @@ impl Config {
             .with(filter)
             .with(format)
             .init();
-    }
-
-    /// tries to load configuration file from the standard location, if it fails it constructs
-    /// a configuration with default values
-    ///
-    /// initializes a global logger based on the configuration
-    pub async fn load_or_default() -> &'static Self {
-        static GLOBAL: OnceCell<&'static Config> = OnceCell::const_new();
-        GLOBAL
-            .get_or_init(|| async {
-                let (config, load_err) = match Self::try_load().await {
-                    Ok(config) => (config, None),
-                    Err(err) => (Self::default_values(), Some(err)),
-                };
-                let global_config = Box::leak(Box::new(config));
-                global_config.init_logger();
-                if let Some(err) = load_err {
-                    // log only after the logger has been initialized
-                    info!(?err, "cannot load config, continuing with defaults");
-                }
-                &*global_config
-            })
-            .await
     }
 }

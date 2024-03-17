@@ -1,7 +1,10 @@
 use std::env;
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
+use ra_multiplex::config::Config;
 use ra_multiplex::{ext, proxy, server};
+use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -13,19 +16,21 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Connect to a ra-mux server [default]
+    /// Connect to an ra-mux server [default]
     Client {
         /// Path to the LSP server executable
         #[arg(
-            long,
+            long = "server-path",
             alias = "ra-mux-server",
             env = "RA_MUX_SERVER",
-            default_value = "rust-analyzer"
+            default_value = "rust-analyzer",
+            name = "SERVER_PATH"
         )]
-        server_path: String,
+        server: String,
 
         /// Arguments passed to the LSP server
-        server_args: Vec<String>,
+        #[arg(name = "SERVER_ARGS")]
+        args: Vec<String>,
     },
 
     /// Start a ra-mux server
@@ -34,7 +39,7 @@ enum Cmd {
     /// Print server status
     Status {
         /// Output data as machine readable JSON
-        #[clap(long, default_value = "false")]
+        #[clap(long = "json", default_value = "false")]
         json: bool,
     },
 
@@ -49,21 +54,32 @@ enum Cmd {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let config = match Config::try_load() {
+        Ok(config) => {
+            config.init_logger();
+            config
+        }
+        Err(err) => {
+            let config = Config::default();
+            config.init_logger();
+            // Log only after the logger has been initialized
+            info!(?err, "cannot load config file, continuing with defaults");
+            config
+        }
+    };
+
     match cli.command {
-        Some(Cmd::Server {}) => server::run().await,
-        Some(Cmd::Client {
-            server_path,
-            server_args,
-        }) => proxy::run(server_path, server_args).await,
-        Some(Cmd::Status { json }) => ext::status(json).await,
-        Some(Cmd::Config {}) => ext::config().await,
-        Some(Cmd::Reload {}) => ext::reload().await,
+        Some(Cmd::Server {}) => server::run(&config).await,
+        Some(Cmd::Client { server, args }) => proxy::run(&config, server, args).await,
+        Some(Cmd::Status { json }) => ext::status(&config, json).await,
+        Some(Cmd::Config {}) => ext::config(&config).await,
+        Some(Cmd::Reload {}) => ext::reload(&config).await,
         None => {
             let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());
-            proxy::run(server_path, vec![]).await
+            proxy::run(&config, server_path, vec![]).await
         }
     }
 }

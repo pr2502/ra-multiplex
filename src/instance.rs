@@ -320,9 +320,8 @@ impl Instance {
 pub struct InstanceMap(HashMap<InstanceKey, Arc<Instance>>);
 
 impl InstanceMap {
-    pub async fn new() -> Arc<Mutex<Self>> {
+    pub async fn new(config: &Config) -> Arc<Mutex<Self>> {
         let instance_map = Arc::new(Mutex::new(InstanceMap(HashMap::new())));
-        let config = Config::load_or_default().await;
         task::spawn(gc_task(
             instance_map.clone(),
             config.gc_interval,

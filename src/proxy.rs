@@ -53,8 +53,7 @@ impl AsyncWrite for Stdio {
     }
 }
 
-pub async fn run(server: String, args: Vec<String>) -> Result<()> {
-    let config = Config::load_or_default().await;
+pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<()> {
     let cwd = env::current_dir()
         .ok()
         .and_then(|path| path.to_str().map(String::from));

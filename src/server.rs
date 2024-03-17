@@ -7,9 +7,8 @@ use crate::client;
 use crate::config::Config;
 use crate::instance::InstanceMap;
 
-pub async fn run() -> Result<()> {
-    let config = Config::load_or_default().await;
-    let instance_map = InstanceMap::new().await;
+pub async fn run(config: &Config) -> Result<()> {
+    let instance_map = InstanceMap::new(config).await;
 
     let listener = TcpListener::bind(config.listen).await.context("listen")?;
     loop {
