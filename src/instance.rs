@@ -153,7 +153,9 @@ impl Instance {
     pub async fn cleanup_client(&self, client: Client) -> Result<()> {
         debug!("cleaning up client");
 
-        let Some(client) = self.clients.lock().await.remove(&client.port()) else {
+        let mut clients = self.clients.lock().await;
+
+        let Some(client) = clients.remove(&client.port()) else {
             // TODO This happens for example when the language server died while
             // client was still connected, and the client cleanup is attempted
             // with the instance being gone already. We should try notifying
@@ -161,11 +163,10 @@ impl Instance {
             bail!("client was not connected");
         };
 
-        for uri in client.files {
-            if let Err(err) = self.close_file(None, uri).await {
-                warn!(?err, "error closing file");
-            }
-        }
+        let files = client.files.into_iter().collect::<Vec<_>>();
+        self.close_all_files(&clients, files)
+            .await
+            .context("error closing files")?;
 
         Ok(())
     }
@@ -237,40 +238,53 @@ impl Instance {
         Ok(())
     }
 
-    /// Handle client closing a file with `textDocument/didOpen` or
-    /// disconnecting with file still opened
-    pub async fn close_file(&self, port: Option<u16>, uri: String) -> Result<()> {
-        let mut send_notification = true;
+    /// Handle `textDocument/didClose` client notification
+    pub async fn close_file(&self, port: u16, params: Value) -> Result<()> {
+        let params = serde_json::from_value::<lsp::DidCloseTextDocumentParams>(params)
+            .context("parsing params")?;
 
         let mut clients = self.clients.lock().await;
 
-        if let Some(port) = port {
-            clients
-                .get_mut(&port)
-                .context("no matching client")?
-                .files
-                .remove(&uri);
-        }
+        clients
+            .get_mut(&port)
+            .context("no matching client")?
+            .files
+            .remove(&params.text_document.uri);
 
-        for client in clients.values() {
-            if client.files.contains(&uri) {
-                debug!(?uri, "file still opened by another client");
-                send_notification = false;
-                break;
+        self.close_all_files(&clients, vec![params.text_document.uri])
+            .await
+    }
+
+    /// Handle closing many files at once and sending notifications for
+    /// definitely closed files
+    async fn close_all_files(
+        &self,
+        clients: &HashMap<u16, ClientData>,
+        files: Vec<String>,
+    ) -> Result<()> {
+        for uri in files {
+            let mut send_notification = true;
+
+            for client in clients.values() {
+                if client.files.contains(&uri) {
+                    debug!(?uri, "file still opened by another client");
+                    send_notification = false;
+                    break;
+                }
             }
-        }
 
-        if send_notification {
-            let params = lsp::DidCloseTextDocumentParams {
-                text_document: lsp::TextDocumentIdentifier { uri },
-            };
-            let notif = Notification {
-                jsonrpc: Version,
-                method: "textDocument/didClose".into(),
-                params: serde_json::to_value(params).unwrap(),
-            };
-            debug!(?notif, "last client closed file");
-            let _ = self.send_message(notif.into()).await;
+            if send_notification {
+                let params = lsp::DidCloseTextDocumentParams {
+                    text_document: lsp::TextDocumentIdentifier { uri },
+                };
+                let notif = Notification {
+                    jsonrpc: Version,
+                    method: "textDocument/didClose".into(),
+                    params: serde_json::to_value(params).unwrap(),
+                };
+                debug!(?notif, "last client closed file");
+                let _ = self.send_message(notif.into()).await;
+            }
         }
 
         Ok(())
