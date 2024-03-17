@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -82,20 +81,12 @@ pub async fn process(
 pub struct Client {
     port: u16,
     sender: mpsc::Sender<Message>,
-    pub files: HashSet<String>,
 }
 
 impl Client {
     fn new(port: u16) -> (Client, mpsc::Receiver<Message>) {
         let (sender, receiver) = mpsc::channel(16);
-        (
-            Client {
-                port,
-                sender,
-                files: HashSet::default(),
-            },
-            receiver,
-        )
+        (Client { port, sender }, receiver)
     }
 
     pub fn port(&self) -> u16 {
@@ -105,13 +96,6 @@ impl Client {
     /// Send a message to the client channel
     pub async fn send_message(&self, message: Message) -> Result<(), SendError<Message>> {
         self.sender.send(message).await
-    }
-
-    pub fn get_status(&self) -> ext::Client {
-        ext::Client {
-            port: self.port,
-            files: self.files.iter().cloned().collect(),
-        }
     }
 }
 

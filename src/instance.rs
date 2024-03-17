@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::Path;
@@ -43,11 +43,11 @@ pub struct Instance {
     /// Server's response to `initialize` request
     init_result: lsp::InitializeResult,
 
-    /// Sending messages to the language server instance
+    /// Handle for sending messages to the language server instance
     server: mpsc::Sender<Message>,
 
-    /// Send messages to clients
-    clients: Mutex<HashMap<u16, Client>>,
+    /// Data of associated clients
+    clients: Mutex<HashMap<u16, ClientData>>,
 
     /// Dynamic capabilities registered by the server
     dynamic_capabilities: Mutex<HashMap<String, lsp::Registration>>,
@@ -65,6 +65,33 @@ impl Drop for Instance {
     fn drop(&mut self) {
         // Make sure we're not leaking anything
         debug!("instance dropped");
+    }
+}
+
+/// Wrapper around client handle with additional data only the server instance
+/// knows about
+struct ClientData {
+    /// Handle for sending messages to clients
+    client: Client,
+
+    /// URIs of files currently opened by this client
+    files: HashSet<String>,
+}
+
+impl ClientData {
+    fn get_status(&self) -> ext::Client {
+        ext::Client {
+            port: self.client.port(),
+            files: self.files.iter().cloned().collect(),
+        }
+    }
+}
+
+impl Deref for ClientData {
+    type Target = Client;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
     }
 }
 
@@ -113,6 +140,10 @@ impl Instance {
             let _ = client.send_message(req.into()).await;
         }
 
+        let client = ClientData {
+            client,
+            files: HashSet::new(),
+        };
         if clients.insert(client.port(), client).is_some() {
             unreachable!("BUG: added two clients with the same port");
         }
