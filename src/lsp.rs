@@ -145,3 +145,18 @@ pub struct Unregistration {
     pub id: String,
     pub method: String,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DidOpenTextDocumentParams {
+    pub text_document: TextDocumentItem,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDocumentItem {
+    pub uri: String,
+    pub language_id: String,
+    pub version: u64,
+    pub text: String,
+}
