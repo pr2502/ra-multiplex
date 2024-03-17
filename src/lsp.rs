@@ -146,6 +146,7 @@ pub struct Unregistration {
     pub method: String,
 }
 
+/// Params for `textDocument/didOpen` notification
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DidOpenTextDocumentParams {
@@ -159,4 +160,17 @@ pub struct TextDocumentItem {
     pub language_id: String,
     pub version: u64,
     pub text: String,
+}
+
+/// Params for `textDocument/didClose` notification
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DidCloseTextDocumentParams {
+    pub text_document: TextDocumentIdentifier,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDocumentIdentifier {
+    pub uri: String,
 }
