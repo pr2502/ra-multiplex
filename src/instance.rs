@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::ops::Deref;
@@ -390,22 +391,24 @@ pub async fn get_or_spawn(
     key: InstanceKey,
     init_req_params: lsp::InitializeParams,
 ) -> Result<Arc<Instance>> {
-    // We have locked the whole map so we can assume noone else tries to spawn
-    // the same instance again.
-    let map_clone = map.clone();
-    let mut map_lock = map_clone.lock().await;
-
-    if let Some(instance) = map_lock.0.get(&key) {
-        info!("reusing language server instance");
-        return Ok(instance.clone());
+    // We have locked a clone of an Arc of the map, we can assume noone else
+    // tries to spawn the same instance again. But we have to make sure `spawn`
+    // doesn't try to lock its copy as well. This is a bit unfortunate code
+    // organization but we want to have spawn in a separate tracing context and
+    // we want to include `wait_task` in it as well in it as well
+    match map.clone().lock().await.0.entry(key.clone()) {
+        Entry::Occupied(e) => {
+            info!("reusing language server instance");
+            Ok(e.get().clone())
+        }
+        Entry::Vacant(e) => {
+            let instance = spawn(key, init_req_params, map)
+                .await
+                .context("spawning instance")?;
+            e.insert(instance.clone());
+            Ok(instance)
+        }
     }
-
-    let instance = spawn(key.clone(), init_req_params, map)
-        .await
-        .context("spawning instance")?;
-    map_lock.0.insert(key, instance.clone());
-
-    Ok(instance)
 }
 
 #[instrument(name = "instance", fields(pid = field::Empty), skip_all, parent = None)]

@@ -299,18 +299,10 @@ fn select_workspace_root<'a>(
 
 /// Receive messages from channel and write them to the client input socket
 async fn input_task(mut rx: mpsc::Receiver<Message>, mut writer: LspWriter<OwnedWriteHalf>) {
-    // Unlike the output task, here we first wait on the channel which is going
-    // to block until the language server sends a notification, however if
-    // we're the last client and have just closed the server is unlikely to send
-    // any. This results in the last client often falsely hanging while the gc
-    // task depends on the input channels being closed to detect a disconnected
-    // client.
-    //
-    // When a client sends a shutdown request we receive a message on the
-    // `close_rx`, send the reply and close the connection. If no shutdown
-    // request was received but the client closed `close_rx` channel will be
-    // dropped (unlike the normal rx channel which is shared) and the connection
-    // will close without sending any response.
+    // The other end of this channel is held by the `output_task` _and_ in the
+    // `Instance` itself, this task depends on the `output_task` to detect a
+    // client disconnect and call `Instance::cleanup_client`, otherwise we're
+    // going to hang forever here.
     while let Some(message) = rx.recv().await {
         if let Err(err) = writer.write_message(&message).await {
             match err.kind() {
