@@ -2,6 +2,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 
 use anyhow::{bail, ensure, Context, Result};
+use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -178,7 +179,9 @@ async fn connect(
             bail!("only `file://` URIs are supported");
         }
         path.normalize(false);
-        path.to_string()
+        percent_decode_str(&path.to_string())
+            .decode_utf8()?
+            .to_string()
     };
 
     // Get an language server instance for this client.

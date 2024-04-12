@@ -10,6 +10,7 @@ edition = "2021"
 anyhow = "1.0.53"
 clap = { version = "4.3.0", features = ["derive", "env"] }
 directories = "4.0.1"
+percent-encoding = "2.3.1"
 pin-project-lite = "0.2.13"
 serde = { version = "1.0.186" }
 serde_derive = { version = "1.0.186" }
