@@ -171,18 +171,8 @@ async fn connect(
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
     // Select the workspace root directory.
-    let workspace_root = {
-        let (scheme, _, mut path, _, _) = select_workspace_root(&init_params, cwd.as_deref())
-            .context("could not get any workspace_root")?
-            .into_parts();
-        if scheme != uriparse::Scheme::File {
-            bail!("only `file://` URIs are supported");
-        }
-        path.normalize(false);
-        percent_decode_str(&path.to_string())
-            .decode_utf8()?
-            .to_string()
-    };
+    let workspace_root = select_workspace_root(&init_params, cwd.as_deref())
+        .context("could not get any workspace_root")?;
 
     // Get an language server instance for this client.
     let key = InstanceKey {
@@ -234,7 +224,7 @@ async fn connect(
 fn select_workspace_root<'a>(
     init_params: &'a InitializeParams,
     proxy_cwd: Option<&'a str>,
-) -> Result<URI<'a>> {
+) -> Result<String> {
     if init_params.workspace_folders.len() > 1 {
         // TODO Ideally we'd be looking up any server which has a superset of
         // workspace folders active possibly adding transforming the `initialize`
@@ -245,56 +235,44 @@ fn select_workspace_root<'a>(
         debug!(workspace_folders = ?init_params.workspace_folders);
     }
 
-    if init_params.workspace_folders.len() == 1 {
-        match URI::try_from(init_params.workspace_folders[0].uri.as_str())
-            .context("parse initParams.workspaceFolders[0].uri")
-        {
-            Ok(root) => return Ok(root),
-            Err(err) => warn!(?err, "failed to parse URI"),
+    // Parse a file path as String out of a LSP `URI` type.
+    fn parse_root_uri(root_uri: &str) -> Result<String> {
+        let (scheme, _, mut path, _, _) = URI::try_from(root_uri)
+            .context("failed to parse URI")?
+            .into_parts();
+
+        if scheme != uriparse::Scheme::File {
+            bail!("only `file://` URIs are supported");
         }
+
+        path.normalize(false);
+
+        let root = percent_decode_str(&path.to_string())
+            .decode_utf8()
+            .context("decoded URI was not valid utf-8")?
+            .to_string();
+
+        Ok(root)
+    }
+
+    if init_params.workspace_folders.len() == 1 {
+        return parse_root_uri(&init_params.workspace_folders[0].uri)
+            .context("parse initParams.workspaceFolders[0].uri");
     }
 
     assert!(init_params.workspace_folders.is_empty());
 
-    // Using the deprecated fields `rootPath` or `rootUri` as fallback
+    // Using the deprecated LSP fields `rootPath` or `rootUri` as fallback
     if let Some(root_uri) = &init_params.root_uri {
-        match URI::try_from(root_uri.as_str()).context("parse initParams.rootUri") {
-            Ok(root) => return Ok(root),
-            Err(err) => warn!(?err, "failed to parse URI"),
-        }
+        return parse_root_uri(root_uri).context("parse initParams.rootUri");
     }
     if let Some(root_path) = &init_params.root_path {
-        // `rootPath` doesn't have a schema but `Url` requires it to parse
-        match uriparse::Path::try_from(root_path.as_str())
-            .map_err(uriparse::URIError::from)
-            .and_then(|path| {
-                URI::builder()
-                    .with_scheme(uriparse::Scheme::File)
-                    .with_path(path)
-                    .build()
-            })
-            .context("parse initParams.rootPath")
-        {
-            Ok(root) => return Ok(root),
-            Err(err) => warn!(?err, "failed to parse URI"),
-        }
+        return Ok(root_path.to_owned());
     }
 
     // Using the proxy `cwd` as fallback
     if let Some(proxy_cwd) = proxy_cwd {
-        match uriparse::Path::try_from(proxy_cwd)
-            .map_err(uriparse::URIError::from)
-            .and_then(|path| {
-                URI::builder()
-                    .with_scheme(uriparse::Scheme::File)
-                    .with_path(path)
-                    .build()
-            })
-            .context("parse initParams.initializationOptions.lspMux.cwd")
-        {
-            Ok(root) => return Ok(root),
-            Err(err) => warn!(?err, "failed to parse URI"),
-        }
+        return Ok(proxy_cwd.to_owned());
     }
 
     bail!("could not determine a suitable workspace_root");
