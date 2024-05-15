@@ -1,5 +1,6 @@
 //! LSP-mux (ra-multiplex) specific protocol extensions
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
@@ -123,9 +124,14 @@ pub enum Request {
         server: String,
 
         /// Arguments which will be passed to the language server, defaults to an
-        /// empty list if omited.
+        /// empty list if omitted.
         #[serde(default = "Vec::new")]
         args: Vec<String>,
+
+        /// Environment variables which will be set for the language server,
+        /// defaults to an empty set if omitted.
+        #[serde(default = "BTreeMap::new", skip_serializing_if = "BTreeMap::is_empty")]
+        env: BTreeMap<String, String>,
 
         /// Current working directory of the proxy command. This is only used as
         /// fallback if the client doesn't provide any workspace root.
@@ -159,6 +165,7 @@ pub struct Instance {
     pub pid: u32,
     pub server: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
     pub workspace_root: String,
     pub registered_dyn_capabilities: Vec<String>,
     pub last_used: i64,

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -31,6 +32,10 @@ mod default {
 
     pub fn log_filters() -> String {
         "info".to_owned()
+    }
+
+    pub fn pass_environment() -> BTreeSet<String> {
+        BTreeSet::new()
     }
 }
 
@@ -96,6 +101,9 @@ pub struct Config {
 
     #[serde(default = "default::log_filters")]
     pub log_filters: String,
+
+    #[serde(default = "default::pass_environment")]
+    pub pass_environment: BTreeSet<String>,
 }
 
 #[cfg(test)]
@@ -121,6 +129,7 @@ impl Default for Config {
             listen: default::listen(),
             connect: default::connect(),
             log_filters: default::log_filters(),
+            pass_environment: default::pass_environment(),
         }
     }
 }

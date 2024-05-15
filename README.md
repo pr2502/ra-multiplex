@@ -126,6 +126,18 @@ connect = ["127.0.0.1", 27631] # same as `listen`
 # is documented in the `env_logger` documentation here:
 # <https://docs.rs/env_logger/0.9.0/env_logger/index.html#enabling-logging>
 log_filters = "info"
+
+# environemnt variable names passed from `ra-multiplex client` to the server
+#
+# by default no variables are passed. and all servers are spawned in
+# the same environment as the `ra-multiplex server` is. when a name like
+# "LD_LIBRARY_PATH" is specifified the proxy reads the variable value from its
+# environment and passes it to the server which then passes it on to the server
+# executable.
+#
+# if "PATH" is specified here then the PATH from the client environment is
+# going to be used for looking up a relative `--server-path`.
+pass_environment = []
 ```
 
 
