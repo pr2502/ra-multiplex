@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - track open files by clients to avoid sending duplicate `textDocument/didOpen` and `textDocument/didClose` notifications
+- fix `reload` subcommand leaking client connections
+- properly percent-decodes URIs from LSP, so whitespace and other URI unsafe characters in project path don't cause issues
 
 
 ## [v0.2.3] - 2024-03-17
