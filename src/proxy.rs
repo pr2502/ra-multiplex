@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -58,6 +59,13 @@ pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<(
         .ok()
         .and_then(|path| path.to_str().map(String::from));
 
+    let mut env = BTreeMap::new();
+    for key in &config.pass_environment {
+        if let Ok(val) = std::env::var(key) {
+            env.insert(key.clone(), val);
+        }
+    }
+
     let mut stream = TcpStream::connect(config.connect)
         .await
         .context("connect")?;
@@ -79,7 +87,12 @@ pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<(
         .lsp_mux
         .get_or_insert_with(|| LspMuxOptions {
             version: LspMuxOptions::PROTOCOL_VERSION.to_owned(),
-            method: Request::Connect { server, args, cwd },
+            method: Request::Connect {
+                server,
+                args,
+                env,
+                cwd,
+            },
         });
     req.params = serde_json::to_value(params).expect("BUG: invalid data");
 

@@ -86,6 +86,12 @@ pub async fn status(config: &Config, json: bool) -> Result<()> {
         println!("- Instance");
         println!("  pid: {}", instance.pid);
         println!("  server: {:?} {:?}", instance.server, instance.args);
+        if !instance.env.is_empty() {
+            println!("  server env:");
+            for (key, val) in instance.env {
+                println!("    {key} = {val}");
+            }
+        }
         println!("  path: {:?}", instance.workspace_root);
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         println!("  last used: {}s ago", now - instance.last_used);

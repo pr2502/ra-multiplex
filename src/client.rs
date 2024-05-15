@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -62,11 +63,16 @@ pub async fn process(
 
     debug!(?options, "lspmux initialization");
     match options.method {
-        ext::Request::Connect { server, args, cwd } => {
+        ext::Request::Connect {
+            server,
+            args,
+            env,
+            cwd,
+        } => {
             connect(
                 port,
                 instance_map,
-                (server, args, cwd),
+                (server, args, env, cwd),
                 req,
                 init_params,
                 reader,
@@ -164,7 +170,12 @@ async fn reload(
 async fn connect(
     port: u16,
     instance_map: Arc<Mutex<InstanceMap>>,
-    (server, args, cwd): (String, Vec<String>, Option<String>),
+    (server, args, env, cwd): (
+        String,
+        Vec<String>,
+        BTreeMap<String, String>,
+        Option<String>,
+    ),
     req: Request,
     init_params: InitializeParams,
     mut reader: LspReader<BufReader<OwnedReadHalf>>,
@@ -178,6 +189,7 @@ async fn connect(
     let key = InstanceKey {
         server,
         args,
+        env,
         workspace_root,
     };
     let instance = instance::get_or_spawn(instance_map, key, init_params).await?;

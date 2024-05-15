@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::Path;
@@ -31,6 +31,7 @@ use crate::lsp::{self, ext};
 pub struct InstanceKey {
     pub server: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
     pub workspace_root: String,
 }
 
@@ -310,6 +311,7 @@ impl Instance {
             pid: self.pid,
             server: self.key.server.clone(),
             args: self.key.args.clone(),
+            env: self.key.env.clone(),
             workspace_root: self.key.workspace_root.clone(),
             last_used: self.last_used.load(Ordering::Relaxed),
             clients,
@@ -422,6 +424,7 @@ async fn spawn(
 ) -> Result<Arc<Instance>> {
     let mut child = Command::new(&key.server)
         .args(&key.args)
+        .envs(&key.env)
         .current_dir(&key.workspace_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
