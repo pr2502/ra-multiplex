@@ -102,7 +102,7 @@ pub async fn status(config: &Config, json: bool) -> Result<()> {
         println!("  clients:");
         for client in instance.clients {
             println!("    - Client");
-            println!("      port: {}", client.port);
+            println!("      id: {}", client.id);
             println!("      files:");
             for file in client.files {
                 println!("        - {}", file);

@@ -11,8 +11,8 @@ use super::jsonrpc::RequestId;
 
 /// Additional metadata inserted into LSP RequestId
 pub enum Tag {
-    /// Request is coming from a client connected on this port
-    Port(u16),
+    /// Request is coming from a client connected with this ID
+    ClientId(usize),
     /// Response to this request should be ignored
     Drop,
     /// Response to this request should be forwarded
@@ -23,7 +23,7 @@ impl RequestId {
     /// Serializes the ID to a string and prepends Tag
     pub fn tag(&self, tag: Tag) -> RequestId {
         let tag = match tag {
-            Tag::Port(port) => format!("port:{port}"),
+            Tag::ClientId(client_id) => format!("client_id:{client_id}"),
             Tag::Drop => "drop".into(),
             Tag::Forward => "forward".into(),
         };
@@ -45,10 +45,10 @@ impl RequestId {
             })
         }
 
-        fn parse_port(input: &str) -> Result<(u16, &str)> {
-            let (port, rest) = input.split_once(':').context("missing`:`")?;
-            let port = u16::from_str(port).context("invalid port number")?;
-            Ok((port, rest))
+        fn parse_client_id(input: &str) -> Result<(usize, &str)> {
+            let (client_id, rest) = input.split_once(':').context("missing`:`")?;
+            let client_id = usize::from_str(client_id).context("invalid client ID")?;
+            Ok((client_id, rest))
         }
 
         fn parse_tag(input: &RequestId) -> Result<(Tag, RequestId)> {
@@ -56,10 +56,10 @@ impl RequestId {
                 bail!("tagged id must be a String found `{input:?}`");
             };
 
-            if let Some(rest) = input.strip_prefix("port:") {
-                let (port, rest) = parse_port(rest)?;
+            if let Some(rest) = input.strip_prefix("client_id:") {
+                let (client_id, rest) = parse_client_id(rest)?;
                 let inner_id = parse_inner_id(rest).context("failed to parse inner ID")?;
-                return Ok((Tag::Port(port), inner_id));
+                return Ok((Tag::ClientId(client_id), inner_id));
             }
 
             if let Some(rest) = input.strip_prefix("drop:") {
@@ -175,7 +175,7 @@ pub struct Instance {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Client {
-    pub port: u16,
+    pub id: usize,
     pub files: Vec<String>,
 }
 
