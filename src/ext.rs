@@ -3,19 +3,19 @@ use std::env;
 use anyhow::{bail, Context, Result};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use tokio::io::BufReader;
-use tokio::net::TcpStream;
 
 use crate::config::Config;
 use crate::lsp::ext::{self, LspMuxOptions, StatusResponse};
 use crate::lsp::jsonrpc::{Message, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{InitializationOptions, InitializeParams};
+use crate::socketwrapper::Stream;
 
 pub async fn ext_request<T>(config: &Config, method: ext::Request) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let (reader, writer) = TcpStream::connect(config.connect)
+    let (reader, writer) = Stream::connect_tcp(config.connect)
         .await
         .context("connect")?
         .into_split();

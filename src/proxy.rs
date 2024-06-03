@@ -3,13 +3,13 @@ use std::env;
 
 use anyhow::{bail, Context as _, Result};
 use tokio::io::{self, BufStream};
-use tokio::net::TcpStream;
 
 use crate::config::Config;
 use crate::lsp::ext::{LspMuxOptions, Request};
 use crate::lsp::jsonrpc::Message;
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::{InitializationOptions, InitializeParams};
+use crate::socketwrapper::Stream;
 
 pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<()> {
     let cwd = env::current_dir()
@@ -23,7 +23,7 @@ pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<(
         }
     }
 
-    let mut stream = TcpStream::connect(config.connect)
+    let mut stream = Stream::connect_tcp(config.connect)
         .await
         .context("connect")?;
     let mut stdio = BufStream::new(io::join(io::stdin(), io::stdout()));

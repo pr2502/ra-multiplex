@@ -416,6 +416,7 @@ dependencies = [
  "clap",
  "directories",
  "percent-encoding",
+ "pin-project-lite",
  "serde",
  "serde_derive",
  "serde_json",
