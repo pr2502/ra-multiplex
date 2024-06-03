@@ -25,7 +25,7 @@ use crate::lsp::InitializeParams;
 /// Read first client message and dispatch lsp mux commands
 pub async fn process(
     socket: TcpStream,
-    port: u16,
+    client_id: usize,
     instance_map: Arc<Mutex<InstanceMap>>,
 ) -> Result<()> {
     let (socket_read, socket_write) = socket.into_split();
@@ -70,7 +70,7 @@ pub async fn process(
             cwd,
         } => {
             connect(
-                port,
+                client_id,
                 instance_map,
                 (server, args, env, cwd),
                 req,
@@ -87,18 +87,18 @@ pub async fn process(
 
 #[derive(Clone)]
 pub struct Client {
-    port: u16,
+    id: usize,
     sender: mpsc::Sender<Message>,
 }
 
 impl Client {
-    fn new(port: u16) -> (Client, mpsc::Receiver<Message>) {
+    fn new(id: usize) -> (Client, mpsc::Receiver<Message>) {
         let (sender, receiver) = mpsc::channel(16);
-        (Client { port, sender }, receiver)
+        (Client { id, sender }, receiver)
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
+    pub fn id(&self) -> usize {
+        self.id
     }
 
     /// Send a message to the client channel
@@ -168,7 +168,7 @@ async fn reload(
 
 /// Find or spawn a language server instance and connect the client to it
 async fn connect(
-    port: u16,
+    client_id: usize,
     instance_map: Arc<Mutex<InstanceMap>>,
     (server, args, env, cwd): (
         String,
@@ -224,7 +224,7 @@ async fn connect(
     }
     info!("initialized client");
 
-    let (client, client_rx) = Client::new(port);
+    let (client, client_rx) = Client::new(client_id);
     task::spawn(input_task(client_rx, writer).in_current_span());
     instance.add_client(client.clone()).await;
 
@@ -346,7 +346,7 @@ async fn output_task(
             }
 
             Message::Request(mut req) => {
-                req.id = req.id.tag(Tag::Port(client.port));
+                req.id = req.id.tag(Tag::ClientId(client.id));
                 if instance.send_message(req.into()).await.is_err() {
                     break;
                 }
@@ -372,13 +372,13 @@ async fn output_task(
             }
 
             Message::Notification(notif) if notif.method == "textDocument/didOpen" => {
-                if let Err(err) = instance.open_file(client.port, notif.params).await {
+                if let Err(err) = instance.open_file(client.id, notif.params).await {
                     warn!(?err, "error opening file");
                 }
             }
 
             Message::Notification(notif) if notif.method == "textDocument/didClose" => {
-                if let Err(err) = instance.close_file(client.port, notif.params).await {
+                if let Err(err) = instance.close_file(client.id, notif.params).await {
                     warn!(?err, "error closing file");
                 }
             }

@@ -49,7 +49,7 @@ pub struct Instance {
     server: mpsc::Sender<Message>,
 
     /// Data of associated clients
-    clients: Mutex<HashMap<u16, ClientData>>,
+    clients: Mutex<HashMap<usize, ClientData>>,
 
     /// Dynamic capabilities registered by the server
     dynamic_capabilities: Mutex<HashMap<String, lsp::Registration>>,
@@ -83,7 +83,7 @@ struct ClientData {
 impl ClientData {
     fn get_status(&self) -> ext::Client {
         ext::Client {
-            port: self.client.port(),
+            id: self.client.id(),
             files: self.files.iter().cloned().collect(),
         }
     }
@@ -146,8 +146,8 @@ impl Instance {
             client,
             files: HashSet::new(),
         };
-        if clients.insert(client.port(), client).is_some() {
-            unreachable!("BUG: added two clients with the same port");
+        if clients.insert(client.id(), client).is_some() {
+            unreachable!("BUG: added two clients with the same ID");
         }
     }
 
@@ -157,7 +157,7 @@ impl Instance {
 
         let mut clients = self.clients.lock().await;
 
-        let Some(client) = clients.remove(&client.port()) else {
+        let Some(client) = clients.remove(&client.id()) else {
             // TODO This happens for example when the language server died while
             // client was still connected, and the client cleanup is attempted
             // with the instance being gone already. We should try notifying
@@ -205,7 +205,7 @@ impl Instance {
     }
 
     /// Handle `textDocument/didOpen` client notification
-    pub async fn open_file(&self, port: u16, params: Value) -> Result<()> {
+    pub async fn open_file(&self, client_id: usize, params: Value) -> Result<()> {
         let params = serde_json::from_value::<lsp::DidOpenTextDocumentParams>(params)
             .context("parsing params")?;
         let uri = &params.text_document.uri;
@@ -222,7 +222,7 @@ impl Instance {
         }
 
         clients
-            .get_mut(&port)
+            .get_mut(&client_id)
             .expect("no matching client")
             .files
             .insert(uri.clone());
@@ -241,14 +241,14 @@ impl Instance {
     }
 
     /// Handle `textDocument/didClose` client notification
-    pub async fn close_file(&self, port: u16, params: Value) -> Result<()> {
+    pub async fn close_file(&self, client_id: usize, params: Value) -> Result<()> {
         let params = serde_json::from_value::<lsp::DidCloseTextDocumentParams>(params)
             .context("parsing params")?;
 
         let mut clients = self.clients.lock().await;
 
         clients
-            .get_mut(&port)
+            .get_mut(&client_id)
             .context("no matching client")?
             .files
             .remove(&params.text_document.uri);
@@ -261,7 +261,7 @@ impl Instance {
     /// definitely closed files
     async fn close_all_files(
         &self,
-        clients: &HashMap<u16, ClientData>,
+        clients: &HashMap<usize, ClientData>,
         files: Vec<String>,
     ) -> Result<()> {
         for uri in files {
@@ -643,12 +643,12 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 // Forward successful response to the right client based on the
                 // Request ID tag.
                 match res.id.untag() {
-                    (Some(Tag::Port(port)), id) => {
+                    (Some(Tag::ClientId(client_id)), id) => {
                         res.id = id;
-                        if let Some(client) = clients.get(&port) {
+                        if let Some(client) = clients.get(&client_id) {
                             let _ = client.send_message(res.into()).await;
                         } else {
-                            debug!(?port, "no matching client");
+                            debug!(?client_id, "no matching client");
                         }
                     }
                     (Some(Tag::Drop), _) => {
@@ -664,13 +664,13 @@ async fn stdout_task(instance: Arc<Instance>, mut reader: LspReader<BufReader<Ch
                 // Forward the error response to the right client based on the
                 // Request ID tag.
                 match res.id.untag() {
-                    (Some(Tag::Port(port)), id) => {
+                    (Some(Tag::ClientId(client_id)), id) => {
                         warn!(?res, "server responded with error");
                         res.id = id;
-                        if let Some(client) = clients.get(&port) {
+                        if let Some(client) = clients.get(&client_id) {
                             let _ = client.send_message(res.into()).await;
                         } else {
-                            debug!(?port, "no matching client");
+                            debug!(?client_id, "no matching client");
                         }
                     }
                     (Some(Tag::Drop), _) => {

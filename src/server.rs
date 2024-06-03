@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::task;
@@ -9,23 +11,24 @@ use crate::instance::InstanceMap;
 
 pub async fn run(config: &Config) -> Result<()> {
     let instance_map = InstanceMap::new(config).await;
+    let next_client_id = AtomicUsize::new(0);
 
     let listener = TcpListener::bind(config.listen).await.context("listen")?;
     loop {
         match listener.accept().await {
-            Ok((socket, addr)) => {
-                let port = addr.port();
+            Ok((socket, _addr)) => {
+                let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
                 let instance_map = instance_map.clone();
 
                 task::spawn(
                     async move {
                         info!("client connected");
-                        match client::process(socket, port, instance_map).await {
+                        match client::process(socket, client_id, instance_map).await {
                             Ok(_) => {}
                             Err(err) => error!("client error: {err:?}"),
                         }
                     }
-                    .instrument(info_span!("client", %port)),
+                    .instrument(info_span!("client", %client_id)),
                 );
             }
             Err(err) => match err.kind() {
