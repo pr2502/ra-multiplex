@@ -1,19 +1,21 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
-use tokio::net::TcpListener;
 use tokio::task;
 use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::client;
 use crate::config::Config;
 use crate::instance::InstanceMap;
+use crate::socketwrapper::Listener;
 
 pub async fn run(config: &Config) -> Result<()> {
     let instance_map = InstanceMap::new(config).await;
     let next_client_id = AtomicUsize::new(0);
 
-    let listener = TcpListener::bind(config.listen).await.context("listen")?;
+    let listener = Listener::bind_tcp(config.listen.into())
+        .await
+        .context("listen")?;
     loop {
         match listener.accept().await {
             Ok((socket, _addr)) => {

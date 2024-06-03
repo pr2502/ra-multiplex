@@ -6,8 +6,6 @@ use anyhow::{bail, ensure, Context, Result};
 use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use tokio::io::BufReader;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task;
@@ -21,10 +19,11 @@ use crate::lsp::jsonrpc::{
 };
 use crate::lsp::transport::{LspReader, LspWriter};
 use crate::lsp::InitializeParams;
+use crate::socketwrapper::{OwnedReadHalf, OwnedWriteHalf, Stream};
 
 /// Read first client message and dispatch lsp mux commands
 pub async fn process(
-    socket: TcpStream,
+    socket: Stream,
     client_id: usize,
     instance_map: Arc<Mutex<InstanceMap>>,
 ) -> Result<()> {
