@@ -4,7 +4,7 @@ use std::env;
 use anyhow::{bail, Context as _, Result};
 use tokio::io::{self, BufStream};
 
-use crate::config::Config;
+use crate::config::{Address, Config};
 use crate::lsp::ext::{LspMuxOptions, Request};
 use crate::lsp::jsonrpc::Message;
 use crate::lsp::transport::{LspReader, LspWriter};
@@ -23,9 +23,12 @@ pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<(
         }
     }
 
-    let mut stream = Stream::connect_tcp(config.connect)
-        .await
-        .context("connect")?;
+    let mut stream = match config.connect {
+        Address::Tcp(ip_addr, port) => Stream::connect_tcp((ip_addr, port)).await,
+        #[cfg(target_family = "unix")]
+        Address::Unix(ref path) => Stream::connect_unix(path).await,
+    }
+    .context("connect")?;
     let mut stdio = BufStream::new(io::join(io::stdin(), io::stdout()));
 
     // Wait for the client to send `initialize` request.
