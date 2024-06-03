@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use tokio::io::BufReader;
 
-use crate::config::Config;
+use crate::config::{Address, Config};
 use crate::lsp::ext::{self, LspMuxOptions, StatusResponse};
 use crate::lsp::jsonrpc::{Message, Request, RequestId, Version};
 use crate::lsp::transport::{LspReader, LspWriter};
@@ -15,10 +15,13 @@ pub async fn ext_request<T>(config: &Config, method: ext::Request) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let (reader, writer) = Stream::connect_tcp(config.connect)
-        .await
-        .context("connect")?
-        .into_split();
+    let (reader, writer) = match config.connect {
+        Address::Tcp(ip_addr, port) => Stream::connect_tcp((ip_addr, port)).await,
+        #[cfg(target_family = "unix")]
+        Address::Unix(ref path) => Stream::connect_unix(path).await,
+    }
+    .context("connect")?
+    .into_split();
     let mut writer = LspWriter::new(writer, "lspmux");
     let mut reader = LspReader::new(BufReader::new(reader), "lspmux");
 
