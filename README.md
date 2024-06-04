@@ -102,10 +102,11 @@ instance_timeout = 300 # after 5 minutes
 gc_interval = 10 # every 10 seconds
 
 # ip address and port on which ra-multiplex-server listens
+# or unix socket path on *nix operating systems
 #
 # the default "127.0.0.1" only allows connections from localhost which is
 # preferred since the protocol doesn't worry about security.
-# ra-multiplex-server expects the filesystem structure and contents to be the
+# ra-multiplex server expects the filesystem structure and contents to be the
 # same on its machine as on ra-multiplex's machine. if you want to run the
 # server on a different computer it's theoretically possible but at least for
 # now you're on your own.
@@ -114,11 +115,14 @@ gc_interval = 10 # every 10 seconds
 # avoided, the default was picked at random, this only needs to change if
 # another application happens to collide with ra-multiplex.
 listen = ["127.0.0.1", 27631] # localhost & some random unprivileged port
+# listen = "/var/run/ra-mux/ra-mux.sock" # unix socket
 
 # ip address and port to which ra-multiplex will connect to
+# or unix socket path on *nix operating systems
 #
 # this should usually just match the value of `listen`
 connect = ["127.0.0.1", 27631] # same as `listen`
+# connect = "/var/run/ra-mux/ra-mux.sock" # same as `listen`
 
 # default log filters
 #
