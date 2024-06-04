@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - configuration option `pass_environment` which specifies a list of env var names to be passed from ra-multiplex client proxy to the spawned language server (rust-analyzer)
+- added the option to use unix sockets instead of TCP sockets on unix family operating systems
 
 
 ## [v0.2.4] - 2024-05-15
