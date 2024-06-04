@@ -12,12 +12,13 @@ use crate::socketwrapper::Listener;
 pub async fn run(config: &Config) -> Result<()> {
     let instance_map = InstanceMap::new(config).await;
     let next_client_id = AtomicUsize::new(0);
+    let next_client_id = || next_client_id.fetch_add(1, Ordering::Relaxed);
 
     let listener = Listener::bind(&config.listen).await.context("listen")?;
     loop {
         match listener.accept().await {
             Ok((socket, _addr)) => {
-                let client_id = next_client_id.fetch_add(1, Ordering::Relaxed);
+                let client_id = next_client_id();
                 let instance_map = instance_map.clone();
 
                 task::spawn(
