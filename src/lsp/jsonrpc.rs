@@ -197,7 +197,7 @@ mod tests {
 
     fn test(input: Value) {
         let deserialized = from_value::<Message>(input.clone()).expect("failed to deserialize");
-        let serialized = to_value(&deserialized).expect("failed to serialize");
+        let serialized = to_value(deserialized).expect("failed to serialize");
         assert_eq!(input, serialized);
     }
 
