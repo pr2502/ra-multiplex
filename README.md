@@ -114,6 +114,8 @@ gc_interval = 10 # every 10 seconds
 # ports below 1024 will typically require root privileges and should be
 # avoided, the default was picked at random, this only needs to change if
 # another application happens to collide with ra-multiplex.
+#
+# on unix platforms, this can also be the path of a unix domain socket
 listen = ["127.0.0.1", 27631] # localhost & some random unprivileged port
 # listen = "/var/run/ra-mux/ra-mux.sock" # unix socket
 
