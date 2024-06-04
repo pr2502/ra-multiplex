@@ -8,9 +8,11 @@ use std::{io, net};
 
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{tcp, TcpListener, TcpStream, ToSocketAddrs};
+use tokio::net::{tcp, TcpListener, TcpStream};
 #[cfg(target_family = "unix")]
 use tokio::net::{unix, UnixListener, UnixStream};
+
+use crate::config::Address;
 
 pub enum SocketAddr {
     Ip(net::SocketAddr),
@@ -136,17 +138,16 @@ pin_project! {
 }
 
 impl Stream {
-    pub async fn connect_tcp<A: ToSocketAddrs>(addr: A) -> io::Result<Stream> {
-        Ok(Stream::Tcp {
-            tcp: TcpStream::connect(addr).await?,
-        })
-    }
-
-    #[cfg(target_family = "unix")]
-    pub async fn connect_unix<P: AsRef<Path>>(addr: P) -> io::Result<Stream> {
-        Ok(Stream::Unix {
-            unix: UnixStream::connect(addr).await?,
-        })
+    pub async fn connect(addr: &Address) -> io::Result<Stream> {
+        match addr {
+            Address::Tcp(ip_addr, port) => Ok(Stream::Tcp {
+                tcp: TcpStream::connect((*ip_addr, *port)).await?,
+            }),
+            #[cfg(target_family = "unix")]
+            Address::Unix(path) => Ok(Stream::Unix {
+                unix: UnixStream::connect(path).await?,
+            }),
+        }
     }
 
     pub fn into_split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
