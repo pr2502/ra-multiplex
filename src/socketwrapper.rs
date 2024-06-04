@@ -1,7 +1,5 @@
 #[cfg(target_family = "unix")]
 use std::fs;
-#[cfg(target_family = "unix")]
-use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{io, net};
@@ -234,18 +232,21 @@ pub enum Listener {
 }
 
 impl Listener {
-    pub async fn bind_tcp(addr: net::SocketAddr) -> io::Result<Listener> {
-        Ok(Listener::Tcp(TcpListener::bind(addr).await?))
-    }
-
-    #[cfg(target_family = "unix")]
-    pub fn bind_unix<T: AsRef<Path>>(addr: T) -> io::Result<Listener> {
-        match fs::remove_file(&addr) {
-            Ok(()) => (),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e),
+    pub async fn bind(addr: &Address) -> io::Result<Listener> {
+        match addr {
+            Address::Tcp(ip_addr, port) => {
+                Ok(Listener::Tcp(TcpListener::bind((*ip_addr, *port)).await?))
+            }
+            #[cfg(target_family = "unix")]
+            Address::Unix(path) => {
+                match fs::remove_file(&path) {
+                    Ok(()) => (),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                    Err(e) => return Err(e),
+                }
+                Ok(Listener::Unix(UnixListener::bind(path)?))
+            }
         }
-        Ok(Listener::Unix(UnixListener::bind(addr)?))
     }
 
     pub async fn accept(&self) -> io::Result<(Stream, SocketAddr)> {
