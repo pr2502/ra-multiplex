@@ -5,7 +5,7 @@ use tokio::task;
 use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::client;
-use crate::config::{Address, Config};
+use crate::config::Config;
 use crate::instance::InstanceMap;
 use crate::socketwrapper::Listener;
 
@@ -13,12 +13,7 @@ pub async fn run(config: &Config) -> Result<()> {
     let instance_map = InstanceMap::new(config).await;
     let next_client_id = AtomicUsize::new(0);
 
-    let listener = match config.listen {
-        Address::Tcp(ip_addr, port) => Listener::bind_tcp((ip_addr, port).into()).await,
-        #[cfg(target_family = "unix")]
-        Address::Unix(ref path) => Listener::bind_unix(path),
-    }
-    .context("listen")?;
+    let listener = Listener::bind(&config.listen).await.context("listen")?;
     loop {
         match listener.accept().await {
             Ok((socket, _addr)) => {
