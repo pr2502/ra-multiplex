@@ -239,7 +239,7 @@ impl Listener {
             }
             #[cfg(target_family = "unix")]
             Address::Unix(path) => {
-                match fs::remove_file(&path) {
+                match fs::remove_file(path) {
                     Ok(()) => (),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                     Err(e) => return Err(e),
