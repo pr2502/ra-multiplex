@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{io, net};
 
+use anyhow::{Context as _, Result};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{tcp, TcpListener, TcpStream};
@@ -136,15 +137,17 @@ pin_project! {
 }
 
 impl Stream {
-    pub async fn connect(addr: &Address) -> io::Result<Stream> {
+    pub async fn connect(addr: &Address) -> Result<Stream> {
         match addr {
-            Address::Tcp(ip_addr, port) => Ok(Stream::Tcp {
-                tcp: TcpStream::connect((*ip_addr, *port)).await?,
-            }),
+            Address::Tcp(ip_addr, port) => TcpStream::connect((*ip_addr, *port))
+                .await
+                .with_context(|| format!("connecting to tcp socket {ip_addr}:{port}"))
+                .map(|tcp| Stream::Tcp { tcp }),
             #[cfg(target_family = "unix")]
-            Address::Unix(path) => Ok(Stream::Unix {
-                unix: UnixStream::connect(path).await?,
-            }),
+            Address::Unix(path) => UnixStream::connect(path)
+                .await
+                .with_context(|| format!("connecting to unix socket {path:?}"))
+                .map(|unix| Stream::Unix { unix }),
         }
     }
 
@@ -232,19 +235,25 @@ pub enum Listener {
 }
 
 impl Listener {
-    pub async fn bind(addr: &Address) -> io::Result<Listener> {
+    pub async fn bind(addr: &Address) -> Result<Listener> {
         match addr {
-            Address::Tcp(ip_addr, port) => {
-                Ok(Listener::Tcp(TcpListener::bind((*ip_addr, *port)).await?))
-            }
+            Address::Tcp(ip_addr, port) => TcpListener::bind((*ip_addr, *port))
+                .await
+                .with_context(|| format!("binding to tcp socket {ip_addr}:{port}"))
+                .map(Listener::Tcp),
             #[cfg(target_family = "unix")]
             Address::Unix(path) => {
                 match fs::remove_file(path) {
                     Ok(()) => (),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return Err(e)
+                            .with_context(|| format!("removing old unix socket file {path:?}"))
+                    }
                 }
-                Ok(Listener::Unix(UnixListener::bind(path)?))
+                UnixListener::bind(path)
+                    .with_context(|| format!("binding to unix socket {path:?}"))
+                    .map(Listener::Unix)
             }
         }
     }

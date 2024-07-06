@@ -15,6 +15,7 @@ pub async fn run(config: &Config) -> Result<()> {
     let next_client_id = || next_client_id.fetch_add(1, Ordering::Relaxed);
 
     let listener = Listener::bind(&config.listen).await.context("listen")?;
+    info!(socket = ?config.listen, "listening");
     loop {
         match listener.accept().await {
             Ok((socket, _addr)) => {

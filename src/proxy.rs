@@ -23,7 +23,9 @@ pub async fn run(config: &Config, server: String, args: Vec<String>) -> Result<(
         }
     }
 
-    let mut stream = Stream::connect(&config.connect).await.context("connect")?;
+    let mut stream = Stream::connect(&config.connect)
+        .await
+        .context("connecting to server")?;
     let mut stdio = BufStream::new(io::join(io::stdin(), io::stdout()));
 
     // Wait for the client to send `initialize` request.
