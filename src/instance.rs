@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
 use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::Path;
@@ -431,9 +432,22 @@ async fn spawn(
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| {
+            let InstanceKey {
+                server,
+                args,
+                env,
+                workspace_root,
+            } = &key;
+            let path = env
+                .get("PATH")
+                .map(<_>::to_owned)
+                // Display PATH from our environment Command will if none was
+                // passed from the client environment.
+                .or_else(|| env::var("PATH").ok())
+                .unwrap_or_default();
             format!(
-                "spawning langauge server: server={:?}, args={:?}, cwd={:?}",
-                key.server, key.args, key.workspace_root,
+                "spawning langauge server: server={server:?}, args={args:?}, \
+                cwd={workspace_root:?}, path={path:?}, env={env:?}",
             )
         })?;
 
