@@ -456,9 +456,6 @@ async fn spawn(
 
     info!(server = ?key.server, args = ?key.args, cwd = ?key.workspace_root, "spawned langauge server");
 
-    let stderr = child.stderr.take().unwrap();
-    task::spawn(stderr_task(stderr).in_current_span());
-
     let stdout = child.stdout.take().unwrap();
     let mut reader = LspReader::new(BufReader::new(stdout), "server");
 
@@ -483,6 +480,9 @@ async fn spawn(
         close: Notify::new(),
         last_used: AtomicI64::new(utc_now()),
     });
+
+    let stderr = child.stderr.take().unwrap();
+    task::spawn(stderr_task(instance.clone(), stderr).in_current_span());
 
     task::spawn(stdout_task(instance.clone(), reader).in_current_span());
     task::spawn(stdin_task(rx, writer).in_current_span());
@@ -542,8 +542,21 @@ async fn initialize_handshake(
     Ok(result)
 }
 
+/// Send error notification to all clients
+async fn send_error_notification(instance: Arc<Instance>, message: &str) {
+    let notify = Notification {
+        jsonrpc: Version,
+        method: "experimental/serverStatus".into(),
+        params: serde_json::json!({ "health": "error", "message": message }),
+    };
+    let clients = instance.clients.lock().await;
+    for client in clients.values() {
+        let _ = client.send_message(notify.clone().into()).await;
+    }
+}
+
 /// Read errors from langauge server stderr and log them
-async fn stderr_task(stderr: ChildStderr) {
+async fn stderr_task(instance: Arc<Instance>, stderr: ChildStderr) {
     let mut stderr = BufReader::new(stderr);
     let mut buffer = String::new();
 
@@ -557,6 +570,9 @@ async fn stderr_task(stderr: ChildStderr) {
             }
             Ok(_) => {
                 let line = buffer.trim_end(); // remove trailing '\n' or possibly '\r\n'
+
+                send_error_notification(instance.clone(), line).await;
+
                 error!(%line, "stderr");
             }
             Err(err) => {
