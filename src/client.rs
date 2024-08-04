@@ -232,6 +232,49 @@ async fn connect(
     Ok(())
 }
 
+// Parse a file path as String out of a LSP `URI` type.
+fn parse_root_uri(root_uri: &str) -> Result<String> {
+    let (scheme, _, mut path, _, _) = URI::try_from(root_uri)
+        .context("failed to parse URI")?
+        .into_parts();
+
+    if scheme != uriparse::Scheme::File {
+        bail!("only `file://` URIs are supported");
+    }
+
+    path.normalize(false);
+
+    let root = percent_decode_str(&path.to_string())
+        .decode_utf8()
+        .context("decoded URI was not valid utf-8")?
+        .to_string();
+
+    // On windows the drive letter `C:/` gets interpreted as the first
+    // segment of an absolute path which results in an extra `/` at the
+    // beginning of the string representation which needs to be removed.
+    let root = match root.as_bytes() {
+        #[cfg(any(windows, test))]
+        [b'/', drive, b':', b'/', ..] if drive.is_ascii_alphabetic() => {
+            root.strip_prefix('/').unwrap().to_owned()
+        }
+        _ => root,
+    };
+
+    Ok(root)
+}
+
+#[cfg(test)]
+#[test]
+fn parsing_root_uris() {
+    use parse_root_uri as p;
+    assert_eq!(p("file:///home/user/proj").unwrap(), "/home/user/proj");
+    assert_eq!(p("file:///c:/dev/proj").unwrap(), "c:/dev/proj");
+    assert_eq!(p("file:///proj").unwrap(), "/proj");
+    assert_eq!(p("file:///d:/proj").unwrap(), "d:/proj");
+    assert_eq!(p("file:///").unwrap(), "/");
+    assert_eq!(p("file:///e:/").unwrap(), "e:/");
+}
+
 fn select_workspace_root<'a>(
     init_params: &'a InitializeParams,
     proxy_cwd: Option<&'a str>,
@@ -244,26 +287,6 @@ fn select_workspace_root<'a>(
         // workspaces only at first, it's probably the most common use-case anyway.
         warn!("initialize request with multiple workspace folders isn't supported");
         debug!(workspace_folders = ?init_params.workspace_folders);
-    }
-
-    // Parse a file path as String out of a LSP `URI` type.
-    fn parse_root_uri(root_uri: &str) -> Result<String> {
-        let (scheme, _, mut path, _, _) = URI::try_from(root_uri)
-            .context("failed to parse URI")?
-            .into_parts();
-
-        if scheme != uriparse::Scheme::File {
-            bail!("only `file://` URIs are supported");
-        }
-
-        path.normalize(false);
-
-        let root = percent_decode_str(&path.to_string())
-            .decode_utf8()
-            .context("decoded URI was not valid utf-8")?
-            .to_string();
-
-        Ok(root)
     }
 
     if init_params.workspace_folders.len() == 1 {
