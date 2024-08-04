@@ -27,6 +27,7 @@ pub struct LspReader<R> {
 /// For mor details see <https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#headerPart>.
 pub struct Header {
     pub content_length: usize,
+    #[allow(dead_code)]
     pub content_type: Option<String>,
 }
 

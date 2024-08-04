@@ -14,9 +14,9 @@ use tokio::net::{unix, UnixListener, UnixStream};
 use crate::config::Address;
 
 pub enum SocketAddr {
-    Ip(net::SocketAddr),
+    Ip(#[allow(dead_code)] net::SocketAddr),
     #[cfg(target_family = "unix")]
-    Unix(tokio::net::unix::SocketAddr),
+    Unix(#[allow(dead_code)] tokio::net::unix::SocketAddr),
 }
 
 impl From<net::SocketAddr> for SocketAddr {
