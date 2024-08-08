@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - configuration option `pass_environment` which specifies a list of env var names to be passed from ra-multiplex client proxy to the spawned language server (rust-analyzer)
 - added the option to use unix sockets instead of TCP sockets on unix family operating systems
 
+### Fixed
+- on windows remove leading `/` before drive letter
+
 
 ## [v0.2.4] - 2024-05-15
 
@@ -34,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - handle `workspace/configuration` server request to fix rust-analyzer configuration with some LSP clients
 - handle `workDoneProgress/create` server request to fix progress indicators in editors
+- handle url encoded paths
 
 
 ## [v0.2.2] - 2023-05-02
