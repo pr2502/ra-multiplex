@@ -446,7 +446,7 @@ async fn spawn(
                 .or_else(|| env::var("PATH").ok())
                 .unwrap_or_default();
             format!(
-                "spawning langauge server: server={server:?}, args={args:?}, \
+                "spawning language server: server={server:?}, args={args:?}, \
                 cwd={workspace_root:?}, path={path:?}, env={env:?}",
             )
         })?;
@@ -454,7 +454,7 @@ async fn spawn(
     let pid = child.id().context("child exited early, couldn't get PID")?;
     tracing::Span::current().record("pid", pid);
 
-    info!(server = ?key.server, args = ?key.args, cwd = ?key.workspace_root, "spawned langauge server");
+    info!(server = ?key.server, args = ?key.args, cwd = ?key.workspace_root, "spawned language server");
 
     let stderr = child.stderr.take().unwrap();
     task::spawn(stderr_task(stderr).in_current_span());
@@ -542,7 +542,7 @@ async fn initialize_handshake(
     Ok(result)
 }
 
-/// Read errors from langauge server stderr and log them
+/// Read errors from language server stderr and log them
 async fn stderr_task(stderr: ChildStderr) {
     let mut stderr = BufReader::new(stderr);
     let mut buffer = String::new();
