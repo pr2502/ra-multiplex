@@ -58,6 +58,8 @@ Options:
 
 `ra-multiplex server` can run as a systemd user service, see the example `ra-mux.service`.
 
+On Windows, you can install it as a service with a 3rd-party tool like [NSSM](https://nssm.cc/). Make sure to configure the service to logon with your local user instead of the system account or it will have trouble finding local configuration files.
+
 Configure your editor to use `ra-multiplex` as `rust-analyzer`, for example for
 CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
 
