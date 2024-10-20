@@ -27,11 +27,14 @@ If you have any problems you're welcome to open issues on this repository.
 
 ## How to use
 
-Build the project with
+Install ra-multiplex using cargo
 
 ```sh
-$ cargo build --release
+$ cargo install ra-multiplex
 ```
+
+or using one of the package managers which has it
+[available in its repository](https://repology.org/project/ra-multiplex/versions).
 
 Run `ra-multiplex` in server mode, make sure that `rust-analyzer` is in your
 `PATH`:
