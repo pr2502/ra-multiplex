@@ -26,11 +26,17 @@ If you have any problems you're welcome to open issues on this repository.
 
 
 ## How to use
-
-Build the project with
+Install ra-multiplex using cargo:
 
 ```sh
-$ cargo build --release
+cargo install ra-multiplex
+```
+
+Install ra-multiplex using homebrew:
+
+```sh
+brew install simnalamburt/x/ra-multiplex
+brew services start simnalamburt/x/ra-multiplex # to enable service
 ```
 
 Run `ra-multiplex` in server mode, make sure that `rust-analyzer` is in your
