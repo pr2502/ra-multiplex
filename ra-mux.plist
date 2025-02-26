@@ -20,6 +20,16 @@
     <string>/tmp/ra-multiplex.log</string>
     <key>KeepAlive</key>
     <true />
+    <key>RunAtLoad</key>
+    <true/>
+    <key>LimitLoadToSessionType</key>
+    <array>
+      <string>Aqua</string>
+      <string>Background</string>
+      <string>LoginWindow</string>
+      <string>StandardIO</string>
+      <string>System</string>
+    </array>
     <key>UserName</key>
     <string>[USERNAME]</string>
     </dict>
