@@ -12,7 +12,7 @@
     <key>EnvironmentVariables</key>
     <dict>
       <key>PATH</key>
-      <string>[HOME]/.cargo/bin</string>
+      <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin:[HOME]/.cargo/bin</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/tmp/ra-multiplex.log</string>
