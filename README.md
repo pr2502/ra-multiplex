@@ -56,7 +56,9 @@ Options:
   -V, --version  Print version
 ```
 
-`ra-multiplex server` can run as a systemd user service, see the example `ra-mux.service`.
+`ra-multiplex server` can run as a user service:
+* On `systemd` available systems see the example `ra-mux.service`.
+* On `OSX Launchd` systems see the example `ra-mux.plist`
 
 Configure your editor to use `ra-multiplex` as `rust-analyzer`, for example for
 CoC in neovim edit `~/.config/nvim/coc-settings.json`, add:
