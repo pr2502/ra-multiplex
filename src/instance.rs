@@ -330,6 +330,7 @@ impl InstanceMap {
             instance_map.clone(),
             config.gc_interval,
             config.instance_timeout,
+            config.per_workspace_timeout.clone(),
         ));
         instance_map
     }
@@ -361,6 +362,7 @@ async fn gc_task(
     instance_map: Arc<Mutex<InstanceMap>>,
     gc_interval: u32,
     instance_timeout: Option<u32>,
+    per_workspace_timeout: HashMap<String, u32>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(gc_interval.into()));
     loop {
@@ -371,6 +373,16 @@ async fn gc_task(
 
             let idle = instance.idle();
             debug!(path = ?key.workspace_root, idle, clients = clients.len(), "check instance");
+
+            if let Some(workspace_timeout) = per_workspace_timeout.get(&key.workspace_root) {
+                // Close timed out instance
+                if idle > i64::from(*workspace_timeout) && clients.is_empty() {
+                    info!(pid = instance.pid, path = ?key.workspace_root, idle, "instance timed out");
+                    instance.close.notify_one();
+                }
+
+                continue;
+            }
 
             if let Some(instance_timeout) = instance_timeout {
                 // Close timed out instance
