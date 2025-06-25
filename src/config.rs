@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::de::{Error, Unexpected};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize as _, Deserializer};
 use serde_derive::{Deserialize, Serialize};
 
 mod default {
