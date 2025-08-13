@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]

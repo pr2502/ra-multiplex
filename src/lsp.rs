@@ -28,7 +28,7 @@
 //! - Progress notifications - contains a `token` property which could be used to identify the
 //!   client but the specification also says it has nothing to do with the request IDs
 
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 macro_rules! impl_json_debug {
     ( $($type:ty),* $(,)? ) => {

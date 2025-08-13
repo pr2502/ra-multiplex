@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
-use serde_derive::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use super::jsonrpc::RequestId;
