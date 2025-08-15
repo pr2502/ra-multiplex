@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 #[cfg(target_family = "unix")]
@@ -68,6 +68,26 @@ mod de {
         }
     }
 
+    /// parse a list of workspace names and their timeout values
+    pub fn per_workspace_timeout<'de, D>(deserializer: D) -> Result<HashMap<String, u32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WorkspaceTimeout {
+            path: String,
+
+            #[serde(deserialize_with = "instance_timeout")]
+            timeout: Option<u32>,
+        }
+
+        let workspaces: Vec<WorkspaceTimeout> = Vec::deserialize(deserializer)?;
+        Ok(workspaces
+            .into_iter()
+            .filter_map(|w| w.timeout.map(|t| (w.path, t)))
+            .collect())
+    }
+
     /// make sure the value is greater than 0 to giver users feedback on invalid configuration
     pub fn gc_interval<'de, D>(deserializer: D) -> Result<u32, D::Error>
     where
@@ -97,6 +117,10 @@ pub struct Config {
     #[serde(default = "default::instance_timeout")]
     #[serde(deserialize_with = "de::instance_timeout")]
     pub instance_timeout: Option<u32>,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "de::per_workspace_timeout")]
+    pub per_workspace_timeout: HashMap<String, u32>,
 
     #[serde(default = "default::gc_interval")]
     #[serde(deserialize_with = "de::gc_interval")]
@@ -134,6 +158,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             instance_timeout: default::instance_timeout(),
+            per_workspace_timeout: HashMap::default(),
             gc_interval: default::gc_interval(),
             listen: default::listen(),
             connect: default::connect(),
