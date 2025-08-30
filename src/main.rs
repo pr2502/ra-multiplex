@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
         Some(Cmd::Server {}) => server::run(&config).await,
         Some(Cmd::Client { server, args }) => proxy::run(&config, server, args).await,
         Some(Cmd::Status { json }) => ext::status(&config, json).await,
-        Some(Cmd::Config {}) => ext::config(&config).await,
+        Some(Cmd::Config {}) => ext::config(&config),
         Some(Cmd::Reload {}) => ext::reload(&config).await,
         None => {
             let server_path = env::var("RA_MUX_SERVER").unwrap_or_else(|_| "rust-analyzer".into());

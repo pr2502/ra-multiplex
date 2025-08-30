@@ -326,7 +326,7 @@ impl Instance {
 pub struct InstanceMap(HashMap<InstanceKey, Arc<Instance>>);
 
 impl InstanceMap {
-    pub async fn new(config: &Config) -> Arc<Mutex<Self>> {
+    pub fn new(config: &Config) -> Arc<Mutex<Self>> {
         let instance_map = Arc::new(Mutex::new(InstanceMap(HashMap::new())));
         task::spawn(gc_task(
             instance_map.clone(),
