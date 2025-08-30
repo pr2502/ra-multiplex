@@ -68,8 +68,8 @@ where
     }
 }
 
-pub async fn config(config: &Config) -> Result<()> {
-    println!("{:#?}", config);
+pub fn config(config: &Config) -> Result<()> {
+    println!("{config:#?}");
     Ok(())
 }
 
