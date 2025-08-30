@@ -293,17 +293,19 @@ impl Instance {
         Ok(())
     }
 
-    pub fn get_status(&self) -> ext::Instance {
+    async fn get_status(&self) -> ext::Instance {
         let clients = self
             .clients
-            .blocking_lock()
+            .lock()
+            .await
             .values()
             .map(|client| client.get_status())
             .collect();
 
         let registered_dyn_capabilities = self
             .dynamic_capabilities
-            .blocking_lock()
+            .lock()
+            .await
             .values()
             .map(|reg| reg.method.clone())
             .collect();
@@ -344,14 +346,12 @@ impl InstanceMap {
             .map(|(_, inst)| inst.deref())
     }
 
-    pub fn get_status(&self) -> ext::StatusResponse {
-        ext::StatusResponse {
-            instances: self
-                .0
-                .values()
-                .map(|instance| instance.get_status())
-                .collect(),
+    pub async fn get_status(&self) -> ext::StatusResponse {
+        let mut instances = Vec::with_capacity(self.0.len());
+        for instance in self.0.values() {
+            instances.push(instance.get_status().await);
         }
+        ext::StatusResponse { instances }
     }
 }
 

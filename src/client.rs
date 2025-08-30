@@ -110,7 +110,7 @@ async fn status(
     instance_map: Arc<Mutex<InstanceMap>>,
     mut writer: LspWriter<OwnedWriteHalf>,
 ) -> Result<()> {
-    let status = instance_map.lock().await.get_status();
+    let status = instance_map.lock().await.get_status().await;
     writer
         .write_message(&Message::ResponseSuccess(ResponseSuccess {
             jsonrpc: Version,
