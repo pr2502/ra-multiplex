@@ -149,6 +149,20 @@ log_filters = "info"
 # going to be used for looking up a relative `--server-path`.
 # Example: pass_environment = ["PATH", "LD_LIBRARY_PATH"]
 pass_environment = []
+
+# per workspace timeout configuration
+#
+# same as `instance_timeout` but per workspace.
+# path should be an absolute path to the workspace directory.
+# timeout is in seconds and can be set to `false` for infinite timeout.
+
+[[per_workspace_timeout]]
+path = "/path/to/workspace1"
+timeout = 600 # 10 minutes
+
+[[per_workspace_timeout]]
+path = "/path/to/workspace2"
+timeout = false # no timeout
 ```
 
 
