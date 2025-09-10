@@ -10,7 +10,7 @@ use crate::instance::InstanceMap;
 use crate::socketwrapper::Listener;
 
 pub async fn run(config: &Config) -> Result<()> {
-    let instance_map = InstanceMap::new(config).await;
+    let instance_map = InstanceMap::new(config);
     let next_client_id = AtomicUsize::new(0);
     let next_client_id = || next_client_id.fetch_add(1, Ordering::Relaxed);
 
