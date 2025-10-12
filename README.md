@@ -1,3 +1,19 @@
+# This repository has been moved
+
+This repository has been moved to Codeberg to <https://codeberg.org/p2502/lspmux>.
+
+With this move the repository and project name has also been updated from
+`ra-multiplex` to `lspmux` to better reflect what the project is - I've originally
+started it only for rust-analyzer but it soon turned out to be useful for other
+langauge servers as well.
+
+While I was doing all this I also decided to update the license to a more
+copyleft license instead of github's first choice. The past versions in this
+repository will stay available under MIT but all new development over on
+Codeberg will be released under EUPL-1.2.
+
+***
+
 # ra-multiplex &emsp; [![Latest Version]][crates.io]
 
 [Latest Version]: https://img.shields.io/crates/v/ra-multiplex.svg

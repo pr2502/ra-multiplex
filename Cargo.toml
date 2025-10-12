@@ -1,9 +1,9 @@
 [package]
 name = "ra-multiplex"
-version = "0.2.5"
-description = "share one rust-analyzer server instance between multiple LSP clients to save resources"
-repository = "https://github.com/pr2502/ra-multiplex"
-license = "MIT"
+version = "0.2.6"
+description = "share one language server instance between multiple LSP clients to save resources"
+repository = "https://codeberg.org/p2502/lspmux"
+license = "EUPL-1.2"
 edition = "2021"
 
 [dependencies]
